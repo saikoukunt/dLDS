@@ -23,8 +23,7 @@ function update_c(
     direction::String = "c2n",
     skip_error::Bool = false,
     X_clear::AbstractMatrix = nothing,
-)
-end
+) end
 
 function update_f_all(
     X::AbstractMatrix,
@@ -147,14 +146,16 @@ function update_D(
     - Updated dictionary matrix `D`.
     """
     if reg_sign == 0 && reg_frobenius == 0
-        D = y * pinv(x)
+        D_new = y * pinv(x)
     else
         reconstruction_grad = -2 * (y - D * x) * transpose(x)
         sign_grad = reg_sign == 0 ? zeros(size(D)) : reg_sign * sign.(D) # i dont know what this is for
         frobenius_grad = reg_frobenius == 0 ? zeros(size(D)) : 2 * reg_frobenius * D
+
+        D_new = D - lr_D * (reconstruction_grad + sign_grad + frobenius_grad)
     end
 
-    return D - lr_D * (reconstruction_grad + sign_grad + frobenius_grad)
+    return D_new
 end
 
 function step_dynamics_multiple(
