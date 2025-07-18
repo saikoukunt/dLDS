@@ -8,6 +8,15 @@ using SparseArrays
 using Printf
 using Lasso
 
+function train_dLDS()
+    """
+    train_dLDS()
+
+    Placeholder function for training a dLDS model.
+    """
+    println("Training dLDS model...")
+end
+
 function update_c(
     X::AbstractMatrix,
     F::Vector{<:AbstractMatrix},
