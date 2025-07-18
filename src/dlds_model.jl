@@ -172,7 +172,7 @@ function step_dynamics_multiple(
     coefficients::AbstractMatrix,
     F::Vector{<:AbstractMatrix},
     smooth_coeffs::Bool = false,
-    smoothing_params = {"window" => 5},
+    smoothing_params = Dict("window" => 5),
 )
     """
     step_dynamics_multiple(X, coefficients, F, t)
