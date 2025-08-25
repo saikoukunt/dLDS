@@ -1,3 +1,5 @@
+include("./matrix_utils.jl")
+
 using LinearAlgebra
 using Distributions
 using Random
@@ -7,6 +9,7 @@ using ProximalAlgorithms
 using SparseArrays
 using Printf
 using Lasso
+using .MatrixUtils
 
 function train_dLDS()
     """
@@ -227,97 +230,4 @@ function step_dynamics(
     end
 
     return x_next
-end
-
-function init_matrix(
-    matrix_size::Tuple{Int,Int},
-    random_seed::Int,
-    distribution::String = "norm",
-    init_params::Dict{String,Float64} = Dict("loc" => 0.0, "scale" => 1.0),
-    normalize::Bool = false,
-)
-    """
-        init_matrix(matrix_size, random_seed, distribution="normal", init_params, normalize)
-
-    Initializes a matrix of given size with specified distribution and parameters.
-
-    # Arguments
-    - `matrix_size::Tuple{Int,Int}`: Size of the matrix to initialize.
-    - `random_seed::Int`: Seed for random number generation.
-    - `distribution::String`: Type of distribution to use for initialization. Options are:
-        - `"normal"`: Normal distribution.
-        - `"uniform"`: Uniform distribution.
-        - `"integers"`: Constant value.
-        - `"sparse"`: Sparse matrix with random non-zero entries.
-        - '"regional"`: Regional initialization with a specific pattern.`
-    - `init_params::Dict{String, Float64}`: Parameters for the distribution.
-        - For `"normal"`: `loc` (mean), `scale` (standard deviation).
-        - For `"uniform"`: `low`, `high`.
-        - For `"integers"`: `low`, `high`.
-        - For `"sparse"`: `k` (max number of non-zero entries).
-        - For `"regional"`: `k` (number of subdynamics repeats)
-    - `normalize::Bool`: Whether to normalize the matrix after initialization.
-    """
-
-    Random.seed!(random_seed)
-
-    if distribution == "normal"
-        loc = get(init_params, "loc", 0.0)
-        scale = get(init_params, "scale", 1.0)
-        random_mat = rand(Normal(loc, scale), matrix_size)
-    elseif distribution == "uniform"
-        low = get(init_params, "low", 0.0)
-        high = get(init_params, "high", 1.0)
-        random_mat = rand(Uniform(low, high), matrix_size)
-    elseif distribution == "integers"
-        low = get(init_params, "low", 0)
-        high = get(init_params, "high", 10)
-        random_mat = rand(low:high, matrix_size)
-    elseif distribution == "sparse"
-        k = get(init_params, "k", 1)  # Number of non-zero entries
-        rows, cols = matrix_size
-        random_mat = zeros(rows, cols)
-        for col in 1:cols
-            num_nonzero = rand(1:min(k, rows))
-            rows_indices = rand(1:rows, num_nonzero)
-            random_mat[rows_indices, col] = 1
-        end
-    elseif distribution == "regional"
-        # leaving this as a placeholder for future implementation
-    else
-        error(
-            "Unknown distribution type: $distribution. Use 'normal', 'uniform', 'integers', or 'sparse'.",
-        )
-    end
-
-    if normalize
-        return normalize_matrix!(random_mat)
-    else
-        return random_mat
-    end
-end
-
-function normalize_matrix!(A::AbstractMatrix, norm_type::String = "eigen")
-    """
-        normalize_matrix!(A, norm_type="eigen")
-
-    Applies the specified normalization to the matrix `A` in-place.
-
-    # Arguments
-    - `A::AbstractMatrix`: The matrix to normalize.
-    - `norm_type::String`: The type of normalization to apply. Options are:
-        - `"eigen"`: Normalize by the largest eigenvalue.
-        - `"max"`: Normalize by the maximum absolute value.
-        - `"exp"`: Normalize using the matrix exponential.
-    """
-
-    if norm_type == "eigen"
-        return A / maximum(abs.(eigvals(A)))
-    elseif norm_type == "max"
-        return A / maximum(abs.(A))
-    elseif norm_type == "exp"
-        return exp(-tr(mat)) * exp(mat)
-    else
-        error("Unknown normalization type: $norm_type. Use 'eigen', 'max', or 'exp'.")
-    end
 end
