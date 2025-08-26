@@ -9,19 +9,151 @@ using ProximalAlgorithms
 using SparseArrays
 using Printf
 using Lasso
-using .MatrixUtils
 
-function train_dLDS()
+function train_dLDS(
+    Y::AbstractMatrix{T},
+    num_latents::Int,
+    num_motifs::Int;
+    random_seed::Int = 0,
+    max_iter::Int = 3000,
+    recon_threshold::T = T(1e-3),
+    x_l1_coeff::T = zero(T),
+    c_l1_coeff::T = zero(T),
+    c_l1_coeff_decay::T = T(1),
+    c_smooth_coeff::T = zero(T),
+    D_lr::T = T(30),
+    D_sign_coeff::T = zero(T),
+    D_frobenius_coeff::T = zero(T),
+    F_lr_init::T = T(30),
+    F_normalize_matrix::Bool = true,
+    F_normalize_gradient::Bool = false,
+    F_perturb_threshold::T = T(1e-5),
+    F_noise_sigma::T = T(0.1),
+    F_init_max_corr::T = zero(T),
+    F_lr_decay::T = T(0.8),
+    verbose::Bool = true,
+) where {T<:AbstractFloat}
     """
     train_dLDS()
 
     Placeholder function for training a dLDS model.
     """
     println("Training dLDS model...")
+
+    num_observations::Int = size(Y, 1)
+    num_timepoints::Int = size(Y, 2)
+
+    # Initialize/pre-allocated model parameters and state
+    D::tMatrix{T} = init_matrix(
+        InitDistribution.Sparse(),
+        (num_observations, num_latents),
+        random_seed;
+        k = 4,
+    )
+    F::Array{T,3} = init_matrix(
+        InitDistribution.Normal(),
+        (num_motifs, num_latents, num_latents),
+        random_seed,
+    )
+    validate_F_separation!(F_init_max_corr)
+    c::Matrix{T} = init_matrix(
+        InitDistribution.Normal(),
+        (num_motifs, num_timepoints - 1),
+        random_seed,
+    )
+    X::Matrix{T} = Matrix{T}(undef, num_latents, num_timepoints)
+
+    recon_err::Vector{T} = zeros(T, max_iter)
+    F_lr::T = F_lr_init
+    i::Int = 1
+
+    # Pre-allocate for intermediate results
+    data_prediction::Matrix{T} = similar(Y)
+    FX_prod::Matrix{T} = Matrix{T}(undef, num_latents, num_motifs) # for update_c!
+    gradient_sum::Array{T,3} = similar(F)                          # for update f! 
+    temp_gradient::Matrix{T} = Matrix{T}(undef, num_motifs, num_motifs)
+    x_hat_next::Vector{T} = Vector{T}(undef, num_latents)
+    update_F_residuals::Vector{T} = Vector{T}(undef, num_latents)
+    latent_recon_err::Vector{T} = zeros(T, num_timepoints)
+    data_recon_err = Inf
+
+    while (data_recon_err > recon_threshold) && (i <= max_iter)
+        update_X!(X, D, Y, lambda_l1 = x_l1_coeff)
+
+        c_l1_coeff *= c_l1_coeff_decay
+        if i > 1
+            update_c!(c, FX_prod, X, F, c_smooth_coeff, c_l1_coeff; warm_start = True)
+        end
+
+        update_D!(
+            D,
+            D_lr,
+            X,
+            Y;
+            sign_coeff = D_sign_coeff,
+            frobenius_coeff = D_frobenius_coeff,
+        )
+
+        update_F!(
+            F,
+            gradient_sum,
+            temp_gradient,
+            x_hat_next,
+            update_F_residuals,
+            X,
+            c,
+            F_lr;
+            normalize_F = F_normalize_matrix,
+            normalize_gradient = F_normalize_gradient,
+        )
+        F_lr *= F_lr_decay
+
+        data_recon_err = calculate_data_recon_error!(data_prediction, Y, D, X)
+        latent_recon_err[i] = calculate_latent_recon_error!(x_hat_next, F, X, c)
+
+        if verbose
+            println(
+                "Iter $(i): Data Rec. Error: $(data_recon_err), Latent Rec. Error: $(latent_recon_err[i]) ",
+            )
+        end
+        i += 1
+    end
+
+    return D, F, X, c, latent_recon_err
+end
+
+function calculate_data_recon_error!(
+    prediction::AbstractMatrix{T},
+    Y::AbstractMatrix{T},
+    D::AbstractMatrix{T},
+    X::AbstractMatrix{T},
+) where {T<:AbstractFloat}
+    mul!(prediction, D, X)
+    @. prediction .= Y - prediction     # residual, reusing array to avoid extra allocation
+
+    return dot(prediction, prediction) / length(Y)
+end
+
+function calculate_latent_recon_error!(
+    x_hat_next::AbstractVector{T},
+    F::AbstractArray{T,3},
+    X::AbstractMatrix{T},
+    c::AbstractMatrix{T},
+) where {T<:AbstractFloat}
+    total_error::T = zero(T)
+
+    for t in 1:size(X, 2)-1
+        step_dynamics!(x_hat_next, @view(X[:, t]), @view(c[:, t]), F)
+        x_hat_next .= @view(X[:, t+1]) .- x_hat_next    # residual, reusing array to avoid extra allocation
+
+        total_error += dot(x_hat_next, x_hat_next)
+    end
+
+    return total_error / (size(x_hat_next, 1) * size(X, 2) - 1)
 end
 
 """
-    update_c!(c, FX_prod, X, F, smooth_coeff, l1_coeff; max_iter tol, warm_start)
+    update_c!(c, FX_prod, X, F, smooth_coeff, l1_coeff; max_iter, tol, warm_start)
 
 Calculates an update estimate of dynamics motif coefficients.
 
@@ -71,7 +203,7 @@ function update_c!(
 end
 
 """
-    update_F!(F, gradient_sum, temp_gradient, x_hat_next, residuals, X, c, lr_F, normalize_gradient, normalize_F)
+    update_F!(F, gradient_sum, temp_gradient, x_hat_next, residuals, X, c, lr_F; normalize_gradient, normalize_F)
 
 Updates elements of F via gradient descent.
 
@@ -141,7 +273,8 @@ Infers the latent state vector with Lasso regression given the loading matrix D 
 # Returns
 - Inferred state vector.
 """
-function update_X(
+function update_X!(
+    X::AbstractMatrix{T},
     D::AbstractMatrix{T},
     Y::AbstractMatrix{T};
     lambda_l1::T = zero(T),
@@ -150,12 +283,12 @@ function update_X(
         return D \ Y
     else
         model = fit(LassoModel, D, Y, λ = lambda_l1)
-        return coef(model)
+        X .= coef(model)
     end
 end
 
 """
-    update_D(D, lr_D, x, y; reg_sign=0.0, reg_frobenius=0.0)
+    update_D(D, lr_D, x, y; sign_coeff=0.0, frobenius_coeff=0.0)
 
 Updates the dictionary matrix `D` using the provided learning rate and regularization parameters.
 
@@ -164,8 +297,8 @@ Updates the dictionary matrix `D` using the provided learning rate and regulariz
 - `lr_D`: Learning rate for updating `D`.
 - `X`: Latent state history of the system.
 - `Y`: Observations from the system.
-- `reg_sign`: Regularization parameter for sign constraint.
-- `reg_frobenius`: Regularization parameter for Frobenius norm.
+- `sign_coeff`: Regularization parameter for sign constraint.
+- `frobenius_coeff`: Regularization parameter for Frobenius norm.
 
 # Returns
 - Updated dictionary matrix `D`.
@@ -175,10 +308,10 @@ function update_D!(
     lr_D::T,
     X::AbstractMatrix{T},
     Y::AbstractMatrix{T};
-    reg_sign::T = zero(T),
-    reg_frobenius::T = zero(T),
+    sign_coeff::T = zero(T),
+    frobenius_coeff::T = zero(T),
 ) where {T<:AbstractFloat}
-    if reg_sign != 0 || reg_frobenius != 0
+    if sign_coeff != 0 || frobenius_coeff != 0
         tmp = similar(Y)
         reconstruction_grad = similar(D)
         mul!(tmp, D, X)                                     # DX
@@ -188,8 +321,8 @@ function update_D!(
         @. D -=
             lr_D * (
                 (-2 * reconstruction_grad) +
-                (reg_sign * sign(D)) +
-                (2 * reg_frobenius * D)
+                (sign_coeff * sign(D)) +
+                (2 * frobenius_coeff * D)
             )
     else
         D .= Y / X
@@ -223,29 +356,3 @@ function step_dynamics!(
         mul!(x_hat_next, @view(F[i, :, :]), x_t, c_t[i], true)
     end
 end
-
-# """
-#     step_dynamics_multiple(X, coefficients, F, t)å
-
-# Given multiple state vectors representing multiple time points, computes the next
-# state prediction for each time point using the provided coefficients.
-
-# # Arguments
-# - `X::AbstractMatrix`: Latent state history.
-# - `coefficients::AbstractMatrix`: Coefficient history of the system.
-# - `F::Vector{<:AbstractMatrix}`: Dynamics dictionary.
-
-# # Returns
-# - Updated state of the system at time `t+1`.
-# """
-# function step_dynamics_multiple(
-#     X::AbstractMatrix,
-#     coefficients::AbstractMatrix,
-#     F::Vector{<:AbstractMatrix};
-# )
-#     X_next = zeros(size(X, 1), size(X, 2) + 1)
-#     for t in 1:size(X, 2)
-#         X_next[:, t+1] = step_dynamics(X, coefficients, F, t)
-#     end
-#     X_next[:, 1] = X[:, 1]
-# end
