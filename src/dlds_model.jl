@@ -20,214 +20,232 @@ function train_dLDS()
     println("Training dLDS model...")
 end
 
-function update_c(
-    X::AbstractMatrix,
-    F::Vector{<:AbstractMatrix},
-    coefficients::AbstractMatrix,
-    other_params::Dict{String,Any},
-    params_update_c::Dict{String,Any} = Dict(
-        "update_c_type" => "inv",
-        "reg_term" => 0,
-        "smooth_term" => 0,
-        "to_norm_fx" => false,
-    ),
-    random_state::Int = 0,
-    direction::String = "c2n",
-    skip_error::Bool = false,
-    X_clear::AbstractMatrix = nothing,
-) end
+"""
+    update_c!(c, FX_prod, X, F, smooth_coeff, l1_coeff; max_iter tol, warm_start)
 
-function update_f_all(
-    X::AbstractMatrix,
-    F::Vector{<:AbstractMatrix},
-    coefficients::AbstractMatrix,
-    lr_F::Float64,
-    normalize::Bool = false,
-    reduction::String = "mean",
-    normalize_eig::Bool = true,
-)
-    if reduction != "mean" && reduction != "sum"
-        error("reduction must be either 'mean' or 'sum'")
-    end
+Calculates an update estimate of dynamics motif coefficients.
 
-    F_new = Vector{<:AbstractMatrix}(undef, length(F))
-    gradients = calculate_ci_fi_xt(X, F, coefficients)
-    for i in 1:length(F)
-        if reduction == "mean"
-            gradient_dir =
-                mean(gradients[:, :, :] * reshape(coefficients[i], (1, 1, :)), dims = 3)
-        elseif reduction == "median"
-            gradient_dir = median(
-                gradients[:, :, :] * reshape(coefficients[i], (1, 1, :)),
-                dims = 3,
-            )
+# Arguments
+
+- `c`: Dynamics coefficient history of the system.
+- `FX_prod`: A preallocated (# of latents X # of motifs) matrix to hold intermediate results.
+- `X`: Latent state history of the system.
+- `F`: Dynamics motif matrices.
+- `smooth_coeff`: Coefficient for c smoothness penalty.
+- `l1_coeff`: Coefficient for c sparsity penalty.
+- `max_iter`: Max iterations for FISTA solver.
+- `tol`: Stopping tolerance for FISTA solver.
+- `warm_start`: Whether to use previous estimates of c_t as initial guess for FISTA solver.
+"""
+function update_c!(
+    c::AbstractMatrix{T},
+    FX_prod::AbstractMatrix{T},
+    X::AbstractMatrix{T},
+    F::AbstractArray{T,3};
+    smooth_coeff::T = zero(T),
+    l1_coeff::T = zero(T),
+    max_iter::Int = 10,
+    tol::T = 1e-6,
+    warm_start::Bool = false,
+) where {T<:AbstractFloat}
+    for t in axes(c, 2)
+        for i in axes(F, 1)
+            mul!(@view(FX_prod[:, i]), @view(F[i, :, :]), @view(X[:, t]))
         end
 
-        if normalize
-            gradient_dir = normalize_matrix!(gradient_dir, "eigen")
-        end
-        F_new[i] = F[i] - 2 * lr_F * gradient_dir
-        if normalize_eig
-            F_new[i] = normalize_matrix!(F_new[i], "eigen")
-        end
-    end
-
-    # replace NaN entries with random values uniform from 0 to 1
-    for i in 1:length(F)
-        F_new[i][isnan.(F_new[i])] .= rand(Uniform(0, 1), sum(isnan.(F_new[i])))
-    end
-
-    return F_new
-end
-
-function calculate_ci_fi_xt(
-    X::AbstractMatrix,
-    F::Vector{<:AbstractMatrix},
-    coefficients::AbstractMatrix,
-    cumulative::Bool = false,
-)
-    gradients = zeros(size(X, 1), size(X, 1), size(X, 2) - 1)
-
-    local x_hat_next
-    for t in 1:axes(X, 2)-1
-        if cumulative
-            x_prev = t > 1 ? x_hat_next : X[:, 1]
-            x_hat_next = step_dynamics(x_prev, coefficients, F, t)
-            gradients[:, :, t] = (X[:, t+1] - x_hat_next) * transpose(x_prev)
+        reconstruction_loss = LeastSquares(FX_prod, @view(X[:, t+1]))
+        if smooth_coeff > 0 && t > 1
+            smoothness_penalty = LeastSquares(I, @view(c[:, t-1]), λ = 2 * smooth_coeff)
+            f = reconstruction_loss + smoothness_penalty
         else
-            x_hat_next = step_dynamics(X[:, t], coefficients, F, t)
-            gradients[:, :, t] = (X[:, t+1] - x_hat_next) * transpose(X[:, t])
+            f = reconstruction_loss
+        end
+        l1_penalty = NormL1(l1_coeff)
+
+        solver = ProximalAlgorithms.FastForwardBackward(maxit = max_iter, tol = tol)
+        initial_guess = warm_start ? @view(c[:, t]) : zeros(T, size(c, 1))
+
+        solution, iters = solver(initial_guess, f = f, g = l1_penalty)
+        @view(c[:, t]) .= solution
+    end
+end
+
+"""
+    update_F!(F, gradient_sum, temp_gradient, x_hat_next, residuals, X, c, lr_F, normalize_gradient, normalize_F)
+
+Updates elements of F via gradient descent.
+
+# Arguments:
+- `F`: Dynamics motif matrices.
+- `gradient_sum`: Preallocated array (same size as F) for gradient accumulation.
+- `temp_gradient`: Preallocated array (# of latents X # of latents) for gradient calculation.
+- `x_hat_next`: Preallocated vector (# of latents) for gradient calculation.
+- `residuals`: Preallocated vector (# of latents) for gradient calculation.
+- `X`: Latent state history of the system.
+- `c`: Dynamics coefficient history of the system.
+- `lr_F`: Learning rate.
+"""
+function update_F!(
+    F::AbstractArray{T,3},
+    gradient_sum::AbstractArray{T,3},
+    temp_gradient::AbstractMatrix{T},
+    x_hat_next::AbstractVector{T},
+    residuals::AbstractVector{T},
+    X::AbstractMatrix{T},
+    c::AbstractMatrix{T},
+    lr_F::T;
+    normalize_gradient::Bool = false,
+    normalize_F::Bool = true,
+) where {T<:AbstractFloat}
+    fill!(gradient_sum, zero(T))
+
+    # NOTE: can potentially batch this to make it faster
+    # Calculate the sum of the gradients over time w.r.t each F
+    for t in 1:size(X, 2)-1
+        step_dynamics!(x_hat_next, @view(X[:, t]), @view(c[:, t]), F)
+        residuals .= @view(X[:, t+1]) .- x_hat_next
+        mul!(temp_gradient, residuals, @view(X[:, t])')
+
+        for i in axes(F, 1)
+            axpy!(c[i, t], temp_gradient, @view(gradient_sum[i, :, :]))
         end
     end
 
-    return gradients
+    # Take the gradient steps
+    for i in axes(F, 1)
+        @view(gradient_sum[i, :, :]) ./= (size(X, 2) - 1)
+        if normalize_gradient
+            normalize_matrix!(@view(gradient_sum[i, :, :]))
+        end
+
+        @. @view(F[i, :, :]) -= 2 * lr_F * @view(gradient_sum[i, :, :])
+        if normalize_F
+            normalize_matrix!(@view(F[i, :, :]))
+        end
+    end
+
+    nan_indices = isnan.(F)
+    F[nan_indices] .= rand(Uniform(0, 1), sum(nan_indices))
 end
 
+"""
+    update_X(D, Y, lambda_l1=0.0)
+
+Infers the latent state vector with Lasso regression given the loading matrix D and observations y.
+
+# Arguments
+- `D`: Loading matrix.
+- `Y`: Observations from the system.
+- `lambda_l1`: L1 regularization parameter.
+
+# Returns
+- Inferred state vector.
+"""
 function update_X(
-    D::AbstractMatrix,
-    y::AbstractMatrix,
-    lambda_l1::Float64 = 0.0,
-    random_state::Int = 0,
-    other_params::Dict{String,Any} = Dict(),
-)
-    """
-    update_X(D, y, lambda_l1=0.0, random_state=0, other_params)
-
-    Infers the latent state vector with Lasso regression given the loading matrix D and observations y.
-
-    # Arguments
-    - `D::AbstractMatrix`: Loading matrix.
-    - `y::AbstractMatrix`: Observation matrix.
-    - `lambda_l1::Float64`: L1 regularization parameter.
-    - `random_state::Int`: Seed for solver.
-    - `other_params::Dict{String, Any}`: Additional parameters for the update.
-
-    # Returns
-    - Inferred state vector.
-    """
-    if lambda_l1 == 0.0
-        return y * pinv(D)
+    D::AbstractMatrix{T},
+    Y::AbstractMatrix{T};
+    lambda_l1::T = zero(T),
+) where {T<:AbstractFloat}
+    if iszero(lambda_l1)
+        return D \ Y
     else
-        model = fit(LassoModel, D, y, λ = lambda_l1)
+        model = fit(LassoModel, D, Y, λ = lambda_l1)
         return coef(model)
     end
 end
 
-function update_D(
-    D::AbstractMatrix,
-    lr_D::Float64,
-    x::AbstractMatrix,
-    y::AbstractMatrix,
-    reg_sign::Float64 = 0.0,
-    reg_frobenius::Float64 = 0.0,
-)
-    """
-    update_D(D, lr_D, x, y, reg_sign=0.0, reg_frobenius=0.0)
+"""
+    update_D(D, lr_D, x, y; reg_sign=0.0, reg_frobenius=0.0)
 
-    Updates the dictionary matrix `D` using the provided learning rate and regularization parameters.
+Updates the dictionary matrix `D` using the provided learning rate and regularization parameters.
 
-    # Arguments
-    - `D::AbstractMatrix`: Dictionary matrix to be updated.
-    - `lr_D::Float64`: Learning rate for updating `D`.
-    - `x::AbstractMatrix`: Input data matrix.
-    - `y::AbstractMatrix`: Target data matrix.
-    - `reg_sign::Float64`: Regularization parameter for sign constraint.
-    - `reg_frobenius::Float64`: Regularization parameter for Frobenius norm.
+# Arguments
+- `D: Dictionary matrix to be updated.
+- `lr_D`: Learning rate for updating `D`.
+- `X`: Latent state history of the system.
+- `Y`: Observations from the system.
+- `reg_sign`: Regularization parameter for sign constraint.
+- `reg_frobenius`: Regularization parameter for Frobenius norm.
 
-    # Returns
-    - Updated dictionary matrix `D`.
-    """
-    if reg_sign == 0 && reg_frobenius == 0
-        D_new = y * pinv(x)
+# Returns
+- Updated dictionary matrix `D`.
+"""
+function update_D!(
+    D::AbstractMatrix{T},
+    lr_D::T,
+    X::AbstractMatrix{T},
+    Y::AbstractMatrix{T};
+    reg_sign::T = zero(T),
+    reg_frobenius::T = zero(T),
+) where {T<:AbstractFloat}
+    if reg_sign != 0 || reg_frobenius != 0
+        tmp = similar(Y)
+        reconstruction_grad = similar(D)
+        mul!(tmp, D, X)                                     # DX
+        tmp .= Y .- tmp                                     # Y - DX
+        mul!(reconstruction_grad, tmp, X', true, false)     # (Y - DX)X'
+
+        @. D -=
+            lr_D * (
+                (-2 * reconstruction_grad) +
+                (reg_sign * sign(D)) +
+                (2 * reg_frobenius * D)
+            )
     else
-        reconstruction_grad = -2 * (y - D * x) * transpose(x)
-        sign_grad = reg_sign == 0 ? zeros(size(D)) : reg_sign * sign.(D) # i dont know what this is for
-        frobenius_grad = reg_frobenius == 0 ? zeros(size(D)) : 2 * reg_frobenius * D
-
-        D_new = D - lr_D * (reconstruction_grad + sign_grad + frobenius_grad)
+        D .= Y / X
     end
-
-    return D_new
 end
 
-function step_dynamics_multiple(
-    X::AbstractMatrix,
-    coefficients::AbstractMatrix,
-    F::Vector{<:AbstractMatrix},
-    smooth_coeffs::Bool = false,
-    smoothing_params = Dict("window" => 5),
-)
-    """
-    step_dynamics_multiple(X, coefficients, F, t)
+"""
+    step_dynamics(x_t, c_t, F, x_hat_next)
 
-    Given multiple state vectors representing multiple time points, computes the next
-    state prediction for each time point using the provided coefficients.
+Estimates the next state of the system using the current latent state `x_t` and 
+coefficients `c_t`.
 
-    # Arguments
-    - `X::AbstractMatrix`: State history of the system.
-    - `coefficients::AbstractMatrix`: Coefficient history of the system.
-    - `F::Vector{<:AbstractMatrix}`: Dynamics dictionary.
+# Arguments
+- `x_t`: Current latent state of the system.
+- `c_t`: Current coefficient state of the system.
+- `F`: Dynamics dictionary.
+- `x_hat_next`: Destination matrix for computed next state.
 
-    # Returns
-    - Updated state of the system at time `t+1`.
-    """
-    if smooth_coeffs
-        coefficients = smooth_coefficients(coefficients, smoothing_params) #TODO: Implement smoothing
+# Returns
+- Updated state of the system at time `t+1`.
+"""
+function step_dynamics!(
+    x_hat_next::AbstractVector{T},
+    x_t::AbstractVector{T},
+    c_t::AbstractVector{T},
+    F::AbstractArray{T,3},
+) where {T<:AbstractFloat}
+    fill!(x_hat_next, zero(T))
+
+    for i in axes(F, 1)
+        mul!(x_hat_next, @view(F[i, :, :]), x_t, c_t[i], true)
     end
-
-    X_next = zeros(size(X, 1), size(X, 2) + 1)
-    for t in 1:size(X, 2)
-        X_next[:, t+1] = step_dynamics(X, coefficients, F, t)
-    end
-    X_next[:, 1] = X[:, 1]
 end
 
-function step_dynamics(
-    X::AbstractMatrix,
-    coefficients::AbstractMatrix,
-    F::Vector{<:AbstractMatrix},
-    t::Int,
-)
-    """
-    step_dynamics(X, coefficients, F, t)
+# """
+#     step_dynamics_multiple(X, coefficients, F, t)å
 
-    Computes the next state of the system at time `t` using the current state `X` and the coefficients.
+# Given multiple state vectors representing multiple time points, computes the next
+# state prediction for each time point using the provided coefficients.
 
-    # Arguments
-    - `X::AbstractMatrix`: Current state or state history of the system.
-    - `coefficients::AbstractMatrix`: Coefficient history of the system.
-    - `F::Vector{<:AbstractMatrix}`: Dynamics dictionary.
-    - `t::Int`: Current time step.
+# # Arguments
+# - `X::AbstractMatrix`: Latent state history.
+# - `coefficients::AbstractMatrix`: Coefficient history of the system.
+# - `F::Vector{<:AbstractMatrix}`: Dynamics dictionary.
 
-    # Returns
-    - Updated state of the system at time `t+1`.
-    """
-
-    x_t = size(X, 2) > 1 ? X[:, t] : X
-    x_next = zeros(size(x_t))
-    for i in 1:length(F)
-        mul!(x_next, F[i], x_t, coefficients[i, t], 1.0) # inplace multiply-add to reduce allocation overhead
-    end
-
-    return x_next
-end
+# # Returns
+# - Updated state of the system at time `t+1`.
+# """
+# function step_dynamics_multiple(
+#     X::AbstractMatrix,
+#     coefficients::AbstractMatrix,
+#     F::Vector{<:AbstractMatrix};
+# )
+#     X_next = zeros(size(X, 1), size(X, 2) + 1)
+#     for t in 1:size(X, 2)
+#         X_next[:, t+1] = step_dynamics(X, coefficients, F, t)
+#     end
+#     X_next[:, 1] = X[:, 1]
+# end
