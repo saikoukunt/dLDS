@@ -8,7 +8,9 @@ using ProximalOperators
 using ProximalAlgorithms
 using SparseArrays
 using Printf
-using Lasso
+using GLMNet
+using LoopVectorization
+using Base.Threads
 
 function train_dLDS(
     Y::AbstractMatrix{T},
@@ -260,8 +262,9 @@ function update_F!(
     F[nan_indices] .= rand(Uniform(0, 1), sum(nan_indices))
 end
 
+# TODO: Think about if we should do cv lasso instead
 """
-    update_X(D, Y, lambda_l1=0.0)
+    update_X(X, D, Y, lambda_l1=0.0)
 
 Infers the latent state vector with Lasso regression given the loading matrix D and observations y.
 
@@ -280,11 +283,14 @@ function update_X!(
     lambda_l1::T = zero(T),
 ) where {T<:AbstractFloat}
     if iszero(lambda_l1)
-        return D \ Y
+        # X .= D \ Y
+        X .= pinv(D) * Y
     else
-        model = fit(LassoModel, D, Y, λ = lambda_l1)
-        X .= coef(model)
+        fit = glmnet(D, Y, MvNormal(), alpha=1.0, lambda=[lambda_l1], intercept=false)
+        X .= fit.betas[:,:,1]
     end
+
+    return X
 end
 
 """
@@ -318,14 +324,15 @@ function update_D!(
         tmp .= Y .- tmp                                     # Y - DX
         mul!(reconstruction_grad, tmp, X', true, false)     # (Y - DX)X'
 
+        sign_penalty = sum(sign.(D))
         @. D -=
             lr_D * (
                 (-2 * reconstruction_grad) +
-                (sign_coeff * sign(D)) +
+                (sign_coeff * sign_penalty) +
                 (2 * frobenius_coeff * D)
             )
     else
-        D .= Y / X
+        D .= Y * pinv(X)
     end
 end
 
