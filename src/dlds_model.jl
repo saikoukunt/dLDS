@@ -9,7 +9,8 @@ using ProximalAlgorithms
 using SparseArrays
 using Printf
 using GLMNet
-using LoopVectorization
+using DifferentiationInterface
+import Mooncake
 using Base.Threads
 
 function train_dLDS(
@@ -73,7 +74,7 @@ function train_dLDS(
     data_prediction::Matrix{T} = similar(Y)
     FX_prod::Matrix{T} = Matrix{T}(undef, num_latents, num_motifs) # for update_c!
     gradient_sum::Array{T,3} = similar(F)                          # for update f! 
-    temp_gradient::Matrix{T} = Matrix{T}(undef, num_motifs, num_motifs)
+    temp_gradient::Matrix{T} = Matrix{T}(undef, num_latents, num_latents)
     x_hat_next::Vector{T} = Vector{T}(undef, num_latents)
     update_F_residuals::Vector{T} = Vector{T}(undef, num_latents)
     latent_recon_err::Vector{T} = zeros(T, num_timepoints)
@@ -84,7 +85,15 @@ function train_dLDS(
 
         c_l1_coeff *= c_l1_coeff_decay
         if i > 1
-            update_c!(c, FX_prod, X, F, c_smooth_coeff, c_l1_coeff; warm_start = True)
+            update_c!(
+                c,
+                FX_prod,
+                X,
+                F,
+                smooth_coeff = c_smooth_coeff,
+                l1_coeff = c_l1_coeff;
+                warm_start = true,
+            )
         end
 
         update_D!(
@@ -154,6 +163,8 @@ function calculate_latent_recon_error!(
     return total_error / (size(x_hat_next, 1) * size(X, 2) - 1)
 end
 
+# NOTE: this function is parallelizable if we do Jacobi updates instead of Gauss-Siedel
+# NOTE: this can be made faster with a scheme that uses a loose upper bound Lipschitz estimate instead of doing the search
 """
     update_c!(c, FX_prod, X, F, smooth_coeff, l1_coeff; max_iter, tol, warm_start)
 
@@ -182,25 +193,58 @@ function update_c!(
     tol::T = 1e-6,
     warm_start::Bool = false,
 ) where {T<:AbstractFloat}
+    L::T = T(0)
     for t in axes(c, 2)
         for i in axes(F, 1)
             mul!(@view(FX_prod[:, i]), @view(F[i, :, :]), @view(X[:, t]))
         end
 
-        reconstruction_loss = LeastSquares(FX_prod, @view(X[:, t+1]))
         if smooth_coeff > 0 && t > 1
-            smoothness_penalty = LeastSquares(I, @view(c[:, t-1]), λ = 2 * smooth_coeff)
-            f = reconstruction_loss + smoothness_penalty
+            dual_lsq = DoubleLeastSquares(
+                FX_prod,
+                @view(X[:, t+1]),
+                @view(c[:, t-1]),
+                2 * smooth_coeff,
+            )
         else
-            f = reconstruction_loss
+            dual_lsq =
+                DoubleLeastSquares(FX_prod, @view(X[:, t+1]), nothing, 2 * smooth_coeff)
         end
+
         l1_penalty = NormL1(l1_coeff)
 
         solver = ProximalAlgorithms.FastForwardBackward(maxit = max_iter, tol = tol)
         initial_guess = warm_start ? @view(c[:, t]) : zeros(T, size(c, 1))
 
-        solution, iters = solver(initial_guess, f = f, g = l1_penalty)
+        solution, iters = solver(x0 = initial_guess, f = dual_lsq, g = l1_penalty)
         @view(c[:, t]) .= solution
+    end
+end
+
+struct DoubleLeastSquares{T<:AbstractFloat}
+    FX_prod::AbstractMatrix{T}
+    X_tplus1::AbstractVector{T}
+    c_tminus1::Union{AbstractVector{T},Nothing}
+    lambda::T
+end
+
+function ProximalAlgorithms.value_and_gradient(
+    double_lsq::DoubleLeastSquares{T},
+    c::AbstractVector{T},
+) where {T<:AbstractFloat}
+    recon_residual = double_lsq.FX_prod * c
+    recon_residual .-= double_lsq.X_tplus1
+    recon_loss = 0.5 * dot(recon_residual, recon_residual)
+    recon_gradient = double_lsq.FX_prod' * recon_residual
+
+    if double_lsq.c_tminus1 !== nothing
+        smooth_residual = c - double_lsq.c_tminus1
+        smooth_loss = double_lsq.lambda * 0.5 * dot(smooth_residual, smooth_residual)
+        axpy!(double_lsq.lambda, smooth_residual, recon_gradient)  # single step to calculate and accumulate gradient
+
+        return recon_loss + smooth_loss, recon_gradient
+    else
+        return recon_loss, recon_gradient
     end
 end
 
@@ -233,7 +277,7 @@ function update_F!(
 ) where {T<:AbstractFloat}
     fill!(gradient_sum, zero(T))
 
-    # NOTE: can potentially batch this to make it faster
+    # NOTE: can potentially batch/multithread this to make it faster
     # Calculate the sum of the gradients over time w.r.t each F
     for t in 1:size(X, 2)-1
         step_dynamics!(x_hat_next, @view(X[:, t]), @view(c[:, t]), F)
@@ -283,11 +327,17 @@ function update_X!(
     lambda_l1::T = zero(T),
 ) where {T<:AbstractFloat}
     if iszero(lambda_l1)
-        # X .= D \ Y
         X .= pinv(D) * Y
     else
-        fit = glmnet(D, Y, MvNormal(), alpha=1.0, lambda=[lambda_l1], intercept=false)
-        X .= fit.betas[:,:,1]
+        fit = glmnet(
+            D,
+            Y,
+            MvNormal(),
+            alpha = 1.0,
+            lambda = [lambda_l1],
+            intercept = false,
+        )
+        X .= fit.betas[:, :, 1]
     end
 
     return X
@@ -320,8 +370,8 @@ function update_D!(
     if sign_coeff != 0 || frobenius_coeff != 0
         tmp = similar(Y)
         reconstruction_grad = similar(D)
-        mul!(tmp, D, X)                                     # DX
-        tmp .= Y .- tmp                                     # Y - DX
+        mul!(tmp, D, X)
+        tmp .= Y .- tmp
         mul!(reconstruction_grad, tmp, X', true, false)     # (Y - DX)X'
 
         sign_penalty = sum(sign.(D))
