@@ -4,8 +4,8 @@ function simulate_two_subsystems_no_obs(
     num_motifs_per_system::AbstractVector{Int},
     num_trials::Int;
     switching::Bool = true,
-    min_switch_time::Int = 100,
-    max_extra_switch_time::Int = 300,
+    min_switch_time::Int = 50,
+    max_extra_switch_time::Int = 150,
 )
     num_neurons = sum(num_neurons_per_system)
     num_motifs = sum(num_motifs_per_system)
@@ -74,6 +74,7 @@ function simulate_two_switching_systems(
             F,
             num_timepoints,
             num_neurons_per_system,
+            num_motifs_per_system,
         )
     end
 
@@ -86,6 +87,7 @@ function generate_two_subsystem_state_trajectory!(
     F::AbstractArray{T,3},
     num_timepoints::Int,
     num_neurons_per_system::AbstractVector{Int},
+    num_motifs_per_system::AbstractVector{Int},
 ) where {T<:AbstractFloat}
     F_t::Matrix{T} = Matrix{T}(undef, size(F, 2), size(F, 2))
     X[:, 1] = randn(T, size(X, 1))
@@ -96,10 +98,12 @@ function generate_two_subsystem_state_trajectory!(
             axpy!(c[motif, t], F[motif, :, :], F_t)
         end
 
-        if all(X[1:num_neurons_per_system[1], t-1] .== T(0))
+        if all(X[1:num_neurons_per_system[1], t-1] .== T(0)) &&
+           any(c[1:num_motifs_per_system[1], t] .!== T(0))
             X[1:num_neurons_per_system[1], t-1] = randn(T, num_neurons_per_system[1])
         end
-        if all(X[num_neurons_per_system[1]+1:end, t-1] .== T(0))
+        if all(X[num_neurons_per_system[1]+1:end, t-1] .== T(0)) &&
+           any(c[num_motifs_per_system[1]+1:end, t] .!== T(0))
             X[num_neurons_per_system[1]+1:end, t-1] =
                 randn(T, num_neurons_per_system[2])
         end

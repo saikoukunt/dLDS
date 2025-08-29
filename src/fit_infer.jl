@@ -78,7 +78,7 @@ function fit_full_model(
                 l1_coeff = c_l1_coeff;
                 tol = c_fista_tol,
                 max_iter = c_fista_max_iter,
-                warm_start = true,
+                warm_start = i > 1 ? c_fista_warm_start : false,
             )
         end
 
@@ -121,20 +121,23 @@ end
 
 function fit_no_obs_model(
     X::AbstractMatrix{T},
-    num_motif::Int;
+    num_motifs::Int;
     random_seed::Int = 0,
     max_iter::Int = 3000,
+    recon_threshold::T = T(1e-3),
     c_l1_coeff::T = zero(T),
     c_l1_coeff_decay::T = T(1),
     c_smooth_coeff::T = zero(T),
     c_fista_tol::T = T(1e-8),
     c_fista_max_iter::Int = 1000,
+    c_fista_warm_start::Bool = true,
+    F_lr_init::T = T(3),
     F_normalize_matrix::Bool = true,
     F_normalize_gradient::Bool = false,
     F_perturb_threshold::T = T(1e-5),
     F_noise_sigma::T = T(0.1),
     F_init_max_corr::T = zero(T),
-    F_lr_decay::T = T(0.999),
+    F_lr_decay::T = T(0.998),
     verbose::Bool = true,
 ) where {T<:AbstractFloat}
     num_latents::Int = size(X, 1)
@@ -155,7 +158,7 @@ function fit_no_obs_model(
 
     F_lr::T = F_lr_init
     i::Int = 1
-    latent_recon_err::Vector{T} = zeros(T, num_timepoints)
+    latent_recon_err = Inf
 
     FX_prod::Matrix{T} = Matrix{T}(undef, num_latents, num_motifs) # for update_c!
     gradient_sum::Array{T,3} = similar(F)                          # for update f! 
@@ -164,8 +167,6 @@ function fit_no_obs_model(
     update_F_residuals::Vector{T} = Vector{T}(undef, num_latents)
 
     while (latent_recon_err > recon_threshold) && (i <= max_iter)
-        update_X!(X, D, Y, lambda_l1 = x_l1_coeff)
-
         c_l1_coeff *= c_l1_coeff_decay
         update_c!(
             c,
@@ -193,12 +194,10 @@ function fit_no_obs_model(
         )
         F_lr *= F_lr_decay
 
-        latent_recon_err[i] = calculate_latent_recon_error!(x_hat_next, F, X, c)
+        latent_recon_err = calculate_latent_recon_error!(x_hat_next, F, X, c)
 
         if verbose
-            println(
-                "Iter $(i): Data Rec. Error: $(data_recon_err), Latent Rec. Error: $(latent_recon_err[i]) ",
-            )
+            println("Iter $(i): Rec. Error: $(latent_recon_err) ")
         end
         i += 1
     end
@@ -213,7 +212,12 @@ function infer_no_obs_state(
     c_smooth_coeff::T = zero(T),
     c_fista_tol::T = T(1e-8),
     c_fista_max_iter::Int = 1000,
+    random_seed::Int = 0,
 ) where {T<:AbstractFloat}
+    num_motifs = size(F, 1)
+    num_timepoints = size(X, 2)
+    num_latents = size(X, 1)
+
     c::Matrix{T} = init_matrix(
         InitDistribution.Normal(),
         (num_motifs, num_timepoints - 1),
@@ -230,7 +234,7 @@ function infer_no_obs_state(
         l1_coeff = c_l1_coeff;
         tol = c_fista_tol,
         max_iter = c_fista_max_iter,
-        warm_start = i > 1 ? c_fista_warm_start : false,
+        warm_start = false,
     )
 
     return c

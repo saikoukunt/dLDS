@@ -43,7 +43,7 @@ function update_c!(
             )
         else
             dual_lsq =
-                DoubleLeastSquares(FX_prod, @view(X[:, t+1]), nothing, 2 * smooth_coeff)
+                DoubleLeastSquares(FX_prod, @view(X[:, t+1]), nothing, smooth_coeff)
         end
 
         l1_penalty = NormL1(l1_coeff)
@@ -131,7 +131,7 @@ function update_F!(
             normalize_matrix!(@view(gradient_sum[i, :, :]))
         end
 
-        @. @view(F[i, :, :]) -= 2 * lr_F * @view(gradient_sum[i, :, :])
+        @. @view(F[i, :, :]) += lr_F * @view(gradient_sum[i, :, :])
         if normalize_F
             normalize_matrix!(@view(F[i, :, :]))
         end

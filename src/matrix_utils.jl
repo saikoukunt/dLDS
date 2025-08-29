@@ -17,7 +17,7 @@ Initializes a matrix of a given size with a specified distribution.
 
 # Arguments
 - `distribution::InitDistribution.AbstractDistribution`: A distribution type tag (e.g., `InitDistribution.Normal()`).
-- `matrix_size::Tuple{Int,Int}`: The dimensions of the matrix.
+- `matrix_size::Tuple{Vararg{Int}}`: The dimensions of the matrix.
 - `random_seed::Int`: The seed for the random number generator.
 
 # Keyword Arguments
@@ -26,7 +26,7 @@ Initializes a matrix of a given size with a specified distribution.
 """
 function init_matrix(
     distribution::InitDistribution.AbstractDistribution,
-    matrix_size::Tuple{Int,Int},
+    matrix_size::Tuple{Vararg{Int}},
     random_seed::Int;
     normalize::Bool = false,
     kwargs...,
@@ -42,28 +42,28 @@ end
 
 _init_matrix(
     distribution::InitDistribution.Normal,
-    matrix_size::Tuple{Int,Int};
+    matrix_size::Tuple{Vararg{Int}};
     loc::Float64 = 0.0,
     scale::Float64 = 1.0,
 ) = rand(Normal(loc, scale), matrix_size)
 
 _init_matrix(
     distribution::InitDistribution.Uniform,
-    matrix_size::Tuple{Int,Int};
+    matrix_size::Tuple{Vararg{Int}};
     low::Float64 = 0.0,
     high::Float64 = 1.0,
 ) = rand(Uniform(low, high), matrix_size)
 
 _init_matrix(
     distribution::InitDistribution.DiscreteUniform,
-    matrix_size::Tuple{Int,Int};
+    matrix_size::Tuple{Vararg{Int}};
     low::Int = 0,
     high::Int = 10,
 ) = Float64.(rand(low:high, matrix_size))
 
 function _init_matrix(
     distribution::InitDistribution.Sparse,
-    matrix_size::Tuple{Int,Int};
+    matrix_size::Tuple{Vararg{Int}};
     k::Int,
 )
     rows, cols = matrix_size
