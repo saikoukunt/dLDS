@@ -91,6 +91,20 @@ function fit_full_model(
             frobenius_coeff = D_frobenius_coeff,
         )
 
+        update_F!(
+            F,
+            gradient_sum,
+            temp_gradient,
+            x_hat_next,
+            update_F_residuals,
+            X,
+            c,
+            F_lr;
+            normalize_F = F_normalize_matrix,
+            normalize_gradient = F_normalize_gradient,
+        )
+        F_lr *= F_lr_decay
+
         data_recon_err = calculate_data_recon_error!(data_prediction, Y, D, X)
         latent_recon_err[i] = calculate_latent_recon_error!(x_hat_next, F, X, c)
 
@@ -274,5 +288,5 @@ function calculate_latent_recon_error!(
         total_error += dot(x_hat_next, x_hat_next)
     end
 
-    return total_error / (size(x_hat_next, 1) * size(X, 2) - 1)
+    return total_error / (size(x_hat_next, 1) * (size(X, 2) - 1))
 end

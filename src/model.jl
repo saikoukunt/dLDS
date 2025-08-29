@@ -1,16 +1,3 @@
-include("./matrix_utils.jl")
-
-using LinearAlgebra
-using Distributions
-using Random
-using Statistics
-using ProximalOperators
-using ProximalAlgorithms
-using SparseArrays
-using Printf
-using GLMNet
-using Base.Threads
-
 # NOTE: this function is parallelizable if we do Jacobi updates instead of Gauss-Siedel
 # NOTE: this can be made faster with a scheme that uses a loose upper bound Lipschitz estimate instead of doing the search
 """
