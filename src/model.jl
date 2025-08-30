@@ -25,7 +25,7 @@ function update_c!(
     smooth_coeff::T = zero(T),
     l1_coeff::T = zero(T),
     max_iter::Int = 3000,
-    tol::T = 1e-6,
+    tol::T = 1e-3,
     warm_start::Bool = false,
 ) where {T<:AbstractFloat}
     L::T = T(0)
@@ -34,25 +34,27 @@ function update_c!(
             mul!(@view(FX_prod[:, i]), @view(F[i, :, :]), @view(X[:, t]))
         end
 
+        L = eigmax(FX_prod' * FX_prod)
         if smooth_coeff > 0 && t > 1
             dual_lsq = DoubleLeastSquares(
                 FX_prod,
                 @view(X[:, t+1]),
                 @view(c[:, t-1]),
-                2 * smooth_coeff,
+                smooth_coeff,
             )
+            L += smooth_coeff
         else
             dual_lsq =
                 DoubleLeastSquares(FX_prod, @view(X[:, t+1]), nothing, smooth_coeff)
         end
-
         l1_penalty = NormL1(l1_coeff)
 
         solver = ProximalAlgorithms.FastForwardBackward(maxit = max_iter, tol = tol)
         initial_guess = warm_start ? @view(c[:, t]) : zeros(T, size(c, 1))
 
-        solution, iters = solver(x0 = initial_guess, f = dual_lsq, g = l1_penalty)
-        @view(c[:, t]) .= solution
+        solution, iters =
+            solver(x0 = initial_guess, f = dual_lsq, g = l1_penalty, Lf = L)
+        c[:, t] .= solution
     end
 end
 
@@ -105,16 +107,15 @@ function update_F!(
     x_hat_next::AbstractVector{T},
     residuals::AbstractVector{T},
     X::AbstractMatrix{T},
-    c::AbstractMatrix{T},
-    lr_F::T;
-    normalize_gradient::Bool = false,
+    c::AbstractMatrix{T};
+    lr_F::T,
+    decorr_coeff::T = zero(T),
     normalize_F::Bool = true,
 ) where {T<:AbstractFloat}
     fill!(gradient_sum, zero(T))
-
-    # NOTE: can potentially batch/multithread this to make it faster
-    # Calculate the sum of the gradients over time w.r.t each F
-    for t in 1:size(X, 2)-1
+    num_timepoints = size(X, 2) - 1
+    # Calculate the sum of the latent reconstruction gradients over time w.r.t each F
+    for t in 1:num_timepoints
         step_dynamics!(x_hat_next, @view(X[:, t]), @view(c[:, t]), F)
         residuals .= @view(X[:, t+1]) .- x_hat_next
         mul!(temp_gradient, residuals, @view(X[:, t])')
@@ -124,21 +125,32 @@ function update_F!(
         end
     end
 
+    # Normalize by # of timepoints and add the decorrelation term
+    for i in axes(F, 1)
+        grad_i = @view(gradient_sum[i, :, :])
+        grad_i ./= num_timepoints
+        for j in axes(F, 1)
+            if i != j
+                # compute the trace without a new implicit allocation
+                trace = T(0)
+                for k in axes(F, 3)
+                    trace += dot(@view(F[i, :, k]), @view[F[j, :, k]])
+                end
+
+                # add the decorrelation term to the running gradient
+                axpy!(-decorr_coeff * trace / lr_F, F[j, :, :], grad_i)
+            end
+        end
+    end
+
     # Take the gradient steps
     for i in axes(F, 1)
-        @view(gradient_sum[i, :, :]) ./= (size(X, 2) - 1)
-        if normalize_gradient
-            normalize_matrix!(@view(gradient_sum[i, :, :]))
-        end
-
         @. @view(F[i, :, :]) += lr_F * @view(gradient_sum[i, :, :])
+
         if normalize_F
             normalize_matrix!(@view(F[i, :, :]))
         end
     end
-
-    nan_indices = isnan.(F)
-    F[nan_indices] .= rand(Uniform(0, 1), sum(nan_indices))
 end
 
 # TODO: Think about if we should do cv lasso instead
