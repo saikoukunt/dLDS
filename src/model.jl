@@ -1,5 +1,4 @@
 # NOTE: this function is parallelizable if we do Jacobi updates instead of Gauss-Siedel
-# NOTE: this can be made faster with a scheme that uses a loose upper bound Lipschitz estimate instead of doing the search
 """
     update_c!(c, FX_prod, X, F, smooth_coeff, l1_coeff; max_iter, tol, warm_start)
 
@@ -20,6 +19,7 @@ Calculates an update estimate of dynamics motif coefficients.
 function update_c!(
     c::AbstractMatrix{T},
     FX_prod::AbstractMatrix{T},
+    FX_prod_gram::AbstractMatrix{T},
     X::AbstractMatrix{T},
     F::AbstractArray{T,3};
     smooth_coeff::T = zero(T),
@@ -29,33 +29,36 @@ function update_c!(
     warm_start::Bool = false,
 ) where {T<:AbstractFloat}
     L::T = T(0)
+    lambda_l1 = Vector{T}(undef, size(c, 1))
+    l1_penalty = NormL1(lambda_l1)
+    zero_guess = zeros(T, size(c, 1))
+    solver = ProximalAlgorithms.FastForwardBackward(maxit = max_iter, tol = tol)
+    double_lsq =
+        DoubleLeastSquares(FX_prod, @view(X[:, 1]), @view(c[:, 1]), smooth_coeff)
+
     for t in axes(c, 2)
         for i in axes(F, 1)
             mul!(@view(FX_prod[:, i]), @view(F[i, :, :]), @view(X[:, t]))
         end
 
-        L = eigmax(FX_prod' * FX_prod)
+        # TODO: profile precomputing L vs letting the solver do a backtracking line search
+        LinearAlgebra.BLAS.syrk!('U', 'T', true, FX_prod, false, FX_prod_gram)
+        L = eigmax(Symmetric(FX_prod_gram,:U))
         if smooth_coeff > 0 && t > 1
-            dual_lsq = DoubleLeastSquares(
-                FX_prod,
-                @view(X[:, t+1]),
-                @view(c[:, t-1]),
-                smooth_coeff,
-            )
+            update_double_least_squares!(double_lsq, FX_prod, @view(X[:, t+1]), @view(c[:, t-1]),)
             L += smooth_coeff
         else
-            dual_lsq =
-                DoubleLeastSquares(FX_prod, @view(X[:, t+1]), nothing, smooth_coeff)
+            update_double_least_squares!(double_lsq, FX_prod, @view(X[:, t+1]), nothing)
         end
-        l1_penalty = NormL1(l1_coeff)
 
-        solver = ProximalAlgorithms.FastForwardBackward(maxit = max_iter, tol = tol)
-        initial_guess = warm_start ? @view(c[:, t]) : zeros(T, size(c, 1))
-
-        solution, iters =
-            solver(x0 = initial_guess, f = dual_lsq, g = l1_penalty, Lf = L)
+        # reweight based on the previous estimate of c_t
+        @. lambda_l1 = l1_coeff/(1 + 200 * (abs(@view(c[:, t]))))
+        init_guess = warm_start ? @view(c[:, t]) : zero_guess
+        solution, iters = solver(x0 = init_guess, f = double_lsq, g = l1_penalty, Lf = L)
         c[:, t] .= solution
     end
+
+    return c
 end
 
 struct DoubleLeastSquares{T<:AbstractFloat}
@@ -63,6 +66,20 @@ struct DoubleLeastSquares{T<:AbstractFloat}
     X_tplus1::AbstractVector{T}
     c_tminus1::Union{AbstractVector{T},Nothing}
     lambda::T
+end
+
+function update_double_least_squares!(
+    double_lsq::DoubleLeastSquares,
+    FX_prod::AbstractMatrix{T},
+    X_tplus1::AbstractVector{T},
+    c_tminus1::Union{AbstractVector{T},Nothing},
+) where {T<:AbstractFloat}
+    double_lsq.FX_prod .= FX_prod
+    double_lsq.X_tplus1 .= X_tplus1
+    if isnothing(c_tminus1)
+        double_lsq.c_tminus1 = nothing
+    else
+        double_lsq.c_tminus1 .= c_tminus1
 end
 
 function ProximalAlgorithms.value_and_gradient(
