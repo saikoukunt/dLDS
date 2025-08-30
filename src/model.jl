@@ -43,18 +43,23 @@ function update_c!(
 
         # TODO: profile precomputing L vs letting the solver do a backtracking line search
         LinearAlgebra.BLAS.syrk!('U', 'T', true, FX_prod, false, FX_prod_gram)
-        L = eigmax(Symmetric(FX_prod_gram,:U))
+        L = eigmax(Symmetric(FX_prod_gram, :U))
         if smooth_coeff > 0 && t > 1
-            update_double_least_squares!(double_lsq, FX_prod, @view(X[:, t+1]), @view(c[:, t-1]),)
+            update_double_least_squares!(
+                double_lsq,
+                FX_prod,
+                @view(X[:, t+1]),
+                @view(c[:, t-1]),
+            )
             L += smooth_coeff
         else
             update_double_least_squares!(double_lsq, FX_prod, @view(X[:, t+1]), nothing)
         end
 
-        # reweight based on the previous estimate of c_t
-        @. lambda_l1 = l1_coeff/(1 + 200 * (abs(@view(c[:, t]))))
+        @. lambda_l1 = l1_coeff / (1 + 200 * (abs(@view(c[:, t])))) # reweight L1 based on the previous estimate of c_t
         init_guess = warm_start ? @view(c[:, t]) : zero_guess
-        solution, iters = solver(x0 = init_guess, f = double_lsq, g = l1_penalty, Lf = L)
+        solution, iters =
+            solver(x0 = init_guess, f = double_lsq, g = l1_penalty, Lf = L)
         c[:, t] .= solution
     end
 
@@ -80,6 +85,7 @@ function update_double_least_squares!(
         double_lsq.c_tminus1 = nothing
     else
         double_lsq.c_tminus1 .= c_tminus1
+    end
 end
 
 function ProximalAlgorithms.value_and_gradient(
@@ -124,9 +130,9 @@ function update_F!(
     x_hat_next::AbstractVector{T},
     residuals::AbstractVector{T},
     X::AbstractMatrix{T},
-    c::AbstractMatrix{T};
-    lr_F::T,
-    decorr_coeff::T = zero(T),
+    c::AbstractMatrix{T},
+    lr_F::T;
+    decorr_coeff::T = T(0.2),
     normalize_F::Bool = true,
 ) where {T<:AbstractFloat}
     fill!(gradient_sum, zero(T))

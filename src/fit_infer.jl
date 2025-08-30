@@ -59,6 +59,7 @@ function fit_full_model(
     # Pre-allocate for intermediate results
     data_prediction::Matrix{T} = similar(Y)
     FX_prod::Matrix{T} = Matrix{T}(undef, num_latents, num_motifs) # for update_c!
+    FX_prod_gram::Matrix{T} = Matrix{T}(undef, num_motifs, num_motifs)
     gradient_sum::Array{T,3} = similar(F)                          # for update f! 
     temp_gradient::Matrix{T} = Matrix{T}(undef, num_latents, num_latents)
     x_hat_next::Vector{T} = Vector{T}(undef, num_latents)
@@ -72,6 +73,7 @@ function fit_full_model(
             update_c!(
                 c,
                 FX_prod,
+                FX_prod_gram,
                 X,
                 F,
                 smooth_coeff = c_smooth_coeff,
@@ -101,7 +103,6 @@ function fit_full_model(
             c,
             F_lr;
             normalize_F = F_normalize_matrix,
-            normalize_gradient = F_normalize_gradient,
         )
         F_lr *= F_lr_decay
 
@@ -161,6 +162,7 @@ function fit_no_obs_model(
     latent_recon_err = Inf
 
     FX_prod::Matrix{T} = Matrix{T}(undef, num_latents, num_motifs) # for update_c!
+    FX_prod_gram::Matrix{T} = Matrix{T}(undef, num_motifs, num_motifs)
     gradient_sum::Array{T,3} = similar(F)                          # for update f! 
     temp_gradient::Matrix{T} = Matrix{T}(undef, num_latents, num_latents)
     x_hat_next::Vector{T} = Vector{T}(undef, num_latents)
@@ -171,6 +173,7 @@ function fit_no_obs_model(
         update_c!(
             c,
             FX_prod,
+            FX_prod_gram,
             X,
             F,
             smooth_coeff = c_smooth_coeff,
@@ -190,7 +193,6 @@ function fit_no_obs_model(
             c,
             F_lr;
             normalize_F = F_normalize_matrix,
-            normalize_gradient = F_normalize_gradient,
         )
         F_lr *= F_lr_decay
 
@@ -225,9 +227,11 @@ function infer_no_obs_state(
     )
 
     FX_prod::Matrix{T} = Matrix{T}(undef, num_latents, num_motifs)
+    FX_prod_gram::Matrix{T} = Matrix{T}(undef, num_motifs, num_motifs)
     update_c!(
         c,
         FX_prod,
+        FX_prod_gram,
         X,
         F,
         smooth_coeff = c_smooth_coeff,
