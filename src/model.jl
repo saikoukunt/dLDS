@@ -25,11 +25,12 @@ function update_c!(
     smooth_coeff::T = zero(T),
     l1_coeff::T = zero(T),
     max_iter::Int = 3000,
-    tol::T = 1e-3,
+    tol::T = 1e-8,
     warm_start::Bool = false,
 ) where {T<:AbstractFloat}
     L::T = T(0)
     lambda_l1 = Vector{T}(undef, size(c, 1))
+    lambda_l1 .= l1_coeff
     l1_penalty = NormL1(lambda_l1)
     zero_guess = zeros(T, size(c, 1))
     solver = ProximalAlgorithms.FastForwardBackward(maxit = max_iter, tol = tol)
@@ -45,47 +46,39 @@ function update_c!(
         LinearAlgebra.BLAS.syrk!('U', 'T', true, FX_prod, false, FX_prod_gram)
         L = eigmax(Symmetric(FX_prod_gram, :U))
         if smooth_coeff > 0 && t > 1
-            update_double_least_squares!(
-                double_lsq,
-                FX_prod,
-                @view(X[:, t+1]),
-                @view(c[:, t-1]),
-            )
+            update_double_least_squares!(double_lsq, @view(X[:, t+1]), @view(c[:, t-1]))
             L += smooth_coeff
         else
-            update_double_least_squares!(double_lsq, FX_prod, @view(X[:, t+1]), nothing)
+            update_double_least_squares!(double_lsq, @view(X[:, t+1]), Inf)
         end
 
-        @. lambda_l1 = l1_coeff / (1 + 200 * (abs(@view(c[:, t])))) # reweight L1 based on the previous estimate of c_t
         init_guess = warm_start ? @view(c[:, t]) : zero_guess
         solution, iters =
             solver(x0 = init_guess, f = double_lsq, g = l1_penalty, Lf = L)
-        c[:, t] .= solution
+
+        @. lambda_l1 = l1_coeff / (1 + 200 * (abs(solution))) # reweight L1 to correct for bias
+        solution, iters = solver(x0 = solution, f = double_lsq, g = l1_penalty, Lf = L)
+
+        c[:, t] = solution
     end
 
     return c
 end
 
-struct DoubleLeastSquares{T<:AbstractFloat}
+mutable struct DoubleLeastSquares{T<:AbstractFloat}
     FX_prod::AbstractMatrix{T}
     X_tplus1::AbstractVector{T}
-    c_tminus1::Union{AbstractVector{T},Nothing}
+    c_tminus1::Union{AbstractVector{T},T}
     lambda::T
 end
 
 function update_double_least_squares!(
     double_lsq::DoubleLeastSquares,
-    FX_prod::AbstractMatrix{T},
     X_tplus1::AbstractVector{T},
-    c_tminus1::Union{AbstractVector{T},Nothing},
+    c_tminus1::Union{AbstractVector{T},T},
 ) where {T<:AbstractFloat}
-    double_lsq.FX_prod .= FX_prod
-    double_lsq.X_tplus1 .= X_tplus1
-    if isnothing(c_tminus1)
-        double_lsq.c_tminus1 = nothing
-    else
-        double_lsq.c_tminus1 .= c_tminus1
-    end
+    double_lsq.X_tplus1 = X_tplus1
+    double_lsq.c_tminus1 = c_tminus1
 end
 
 function ProximalAlgorithms.value_and_gradient(
@@ -97,7 +90,7 @@ function ProximalAlgorithms.value_and_gradient(
     recon_loss = 0.5 * dot(recon_residual, recon_residual)
     recon_gradient = double_lsq.FX_prod' * recon_residual
 
-    if double_lsq.c_tminus1 !== nothing
+    if double_lsq.c_tminus1 isa AbstractVector{T}
         smooth_residual = c - double_lsq.c_tminus1
         smooth_loss = double_lsq.lambda * 0.5 * dot(smooth_residual, smooth_residual)
         axpy!(double_lsq.lambda, smooth_residual, recon_gradient)  # single step to calculate and accumulate gradient
@@ -139,7 +132,7 @@ function update_F!(
     num_timepoints = size(X, 2) - 1
     # Calculate the sum of the latent reconstruction gradients over time w.r.t each F
     for t in 1:num_timepoints
-        step_dynamics!(x_hat_next, @view(X[:, t]), @view(c[:, t]), F)
+        step_dynamics!(x_hat_next, @view(X[:, t]), @view(c[:, t]), F) # this works correctly
         residuals .= @view(X[:, t+1]) .- x_hat_next
         mul!(temp_gradient, residuals, @view(X[:, t])')
 
@@ -148,16 +141,16 @@ function update_F!(
         end
     end
 
-    # Normalize by # of timepoints and add the decorrelation term
+    # # Normalize by # of timepoints and add the decorrelation term
     for i in axes(F, 1)
         grad_i = @view(gradient_sum[i, :, :])
         grad_i ./= num_timepoints
         for j in axes(F, 1)
-            if i != j
+            if i !== j
                 # compute the trace without a new implicit allocation
                 trace = T(0)
                 for k in axes(F, 3)
-                    trace += dot(@view(F[i, :, k]), @view[F[j, :, k]])
+                    trace += dot(@view(F[i, :, k]), @view(F[j, :, k]))
                 end
 
                 # add the decorrelation term to the running gradient
@@ -168,7 +161,7 @@ function update_F!(
 
     # Take the gradient steps
     for i in axes(F, 1)
-        @. @view(F[i, :, :]) += lr_F * @view(gradient_sum[i, :, :])
+        @. F[i, :, :] += lr_F * @view(gradient_sum[i, :, :])
 
         if normalize_F
             normalize_matrix!(@view(F[i, :, :]))
@@ -257,7 +250,7 @@ function update_D!(
 end
 
 """
-    step_dynamics(x_t, c_t, F, x_hat_next)
+    step_dynamics(x_hat_next, x_t, c_t, F)
 
 Estimates the next state of the system using the current latent state `x_t` and 
 coefficients `c_t`.

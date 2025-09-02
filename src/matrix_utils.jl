@@ -77,7 +77,6 @@ function _init_matrix(
     return random_mat
 end
 
-# REVIEW: This might need to handle 3D array
 # NOTE: removed exp normalization for now since it can't be done in place
 """
     normalize_matrix!(A, norm_type=:eigen)
@@ -96,7 +95,7 @@ function normalize_matrix!(
     norm_type::Symbol = :eigen,
 )
     if norm_type == :eigen
-        norm_factor = maximum(abs.(eigvals(A)))
+        norm_factor = opnorm(A)
     elseif norm_type == :max
         norm_factor = maximum(abs.(A))
     else
