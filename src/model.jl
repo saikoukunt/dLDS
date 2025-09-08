@@ -131,17 +131,17 @@ function update_F!(
     fill!(gradient_sum, zero(T))
     num_timepoints = size(X, 2) - 1
     # Calculate the sum of the latent reconstruction gradients over time w.r.t each F
-    for t in 1:num_timepoints
-        step_dynamics!(x_hat_next, @view(X[:, t]), @view(c[:, t]), F) # this works correctly
-        residuals .= @view(X[:, t+1]) .- x_hat_next
-        mul!(temp_gradient, residuals, @view(X[:, t])')
+    for t in 2:num_timepoints
+        step_dynamics!(x_hat_next, @view(X[:, t-1]), @view(c[:, t]), F) # this works correctly
+        residuals .= @view(X[:, t]) .- x_hat_next
+        mul!(temp_gradient, residuals, @view(X[:, t-1])')
 
         for i in axes(F, 1)
             axpy!(c[i, t], temp_gradient, @view(gradient_sum[i, :, :]))
         end
     end
 
-    # # Normalize by # of timepoints and add the decorrelation term
+    # Normalize by # of timepoints and add the decorrelation term
     for i in axes(F, 1)
         grad_i = @view(gradient_sum[i, :, :])
         grad_i ./= num_timepoints
@@ -160,9 +160,8 @@ function update_F!(
     end
 
     # Take the gradient steps
+    @. F += lr_F * gradient_sum
     for i in axes(F, 1)
-        @. F[i, :, :] += lr_F * @view(gradient_sum[i, :, :])
-
         if normalize_F
             normalize_matrix!(@view(F[i, :, :]))
         end

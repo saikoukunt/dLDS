@@ -288,12 +288,29 @@ function calculate_latent_recon_error!(
 ) where {T<:AbstractFloat}
     total_error::T = zero(T)
 
-    for t in 1:size(X, 2)-1
-        step_dynamics!(x_hat_next, @view(X[:, t]), @view(c[:, t]), F)
-        x_hat_next .= @view(X[:, t+1]) .- x_hat_next    # residual, reusing array to avoid extra allocation
+    for t in 2:size(X, 2)-1
+        step_dynamics!(x_hat_next, @view(X[:, t-1]), @view(c[:, t]), F)
+        x_hat_next .= @view(X[:, t]) .- x_hat_next    # residual, reusing array to avoid extra allocation
 
         total_error += dot(x_hat_next, x_hat_next)
     end
 
     return total_error / (size(x_hat_next, 1) * (size(X, 2) - 1))
+end
+
+function calculate_delta_F(
+    F_new::AbstractArray{T,3},
+    F_old::AbstractArray{T,3},
+) where {T<:AbstractFloat}
+    delta = 0
+    num_motifs = size(F_old, 1)
+
+    for i in 1:num_motifs
+        delta +=
+            1 / num_motifs *
+            sum((@view(F_old[i, :, :]) .- @view(F_new[i, :, :])) .^ 2) /
+            sum(@view(F_new[i, :, :]) .^ 2)
+    end
+
+    return delta
 end
