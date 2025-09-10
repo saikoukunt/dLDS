@@ -132,12 +132,13 @@ function fit_no_obs_model(
     c_fista_tol::T = T(1e-8),
     c_fista_max_iter::Int = 1000,
     c_fista_warm_start::Bool = true,
-    F_lr_init::T = T(2),
+    F_lr_init::T = T(0.03),
     F_normalize_matrix::Bool = true,
+    F_decorr_coeff::T = 0.2,
     F_perturb_threshold::T = T(1e-5),
     F_noise_sigma::T = T(0.1),
     F_init_max_corr::T = zero(T),
-    F_lr_decay::T = T(0.998),
+    F_lr_decay::T = T(0.99995),
     verbose::Bool = true,
 ) where {T<:AbstractFloat}
     num_latents::Int = size(X, 1)
@@ -168,6 +169,7 @@ function fit_no_obs_model(
     update_F_residuals::Vector{T} = Vector{T}(undef, num_latents)
 
     while (latent_recon_err > recon_threshold) && (i <= max_iter)
+        F_old = copy(F)
         c_l1_coeff *= c_l1_coeff_decay
         update_c!(
             c,
@@ -192,18 +194,19 @@ function fit_no_obs_model(
             c,
             F_lr;
             normalize_F = F_normalize_matrix,
+            decorr_coeff = F_decorr_coeff,
         )
         F_lr *= F_lr_decay
 
-        latent_recon_err = calculate_latent_recon_error!(x_hat_next, F, X, c)
-
         if verbose
-            println("Iter $(i): Rec. Error: $(latent_recon_err) ")
+            latent_recon_err = calculate_latent_recon_error!(x_hat_next, F, X, c)
+            dF = calculate_delta_F(F, F_old)
+            println("Iter $(i): Rec. Error: $(latent_recon_err),  dF: $(dF) ")
         end
         i += 1
     end
 
-    return F, c, latent_recon_err
+    return F, c
 end
 
 function infer_no_obs_state(
@@ -295,7 +298,7 @@ function calculate_latent_recon_error!(
         total_error += dot(x_hat_next, x_hat_next)
     end
 
-    return total_error / (size(x_hat_next, 1) * (size(X, 2) - 1))
+    return total_error / sum(X .^ 2)
 end
 
 function calculate_delta_F(

@@ -1,0 +1,28 @@
+using Plots
+
+function plot_Fs(
+    F_hat::AbstractArray{T,3},
+    F::AbstractArray{T,3},
+) where {T<:AbstractFloat}
+    plots = []
+    for i in axes(F, 1)
+        push!(plots, heatmap(F[i, :, :], aspect_ratio = :equal, legend = false))
+    end
+    for i in axes(F_hat, 1)
+        push!(plots, heatmap(F_hat[i, :, :], aspect_ratio = :equal, legend = false))
+    end
+    plot(
+        plots...,
+        layout = (2, size(F_hat, 1)),
+        showaxis = false,
+        size = (200 * size(F_hat, 1), 400),
+    )
+end
+
+function plot_cs(c_hat::AbstractMatrix{T}, c::AbstractArray{T}) where {T<:AbstractFloat}
+    plots = []
+    push!(plots, heatmap(c, size = (1000, 250)))
+    push!(plots, heatmap(c_hat, size = (1000, 250)))
+
+    plot(plots..., layout = (2, 1))
+end

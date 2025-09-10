@@ -29,7 +29,7 @@ function generate_switching_c!(
     while t < num_timepoints
         active_length = min_switch_time + rand(1:max_extra_switch_time)
         end_time = min(t + active_length, num_timepoints)
-        active_system = rand(0:num_motifs)
+        active_system = rand(1:num_motifs)
 
         if active_system !== 0
             c[active_system, t:end_time] .= 1

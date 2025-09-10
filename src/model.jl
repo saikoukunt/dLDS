@@ -131,10 +131,10 @@ function update_F!(
     fill!(gradient_sum, zero(T))
     num_timepoints = size(X, 2) - 1
     # Calculate the sum of the latent reconstruction gradients over time w.r.t each F
-    for t in 2:num_timepoints
-        step_dynamics!(x_hat_next, @view(X[:, t-1]), @view(c[:, t]), F) # this works correctly
-        residuals .= @view(X[:, t]) .- x_hat_next
-        mul!(temp_gradient, residuals, @view(X[:, t-1])')
+    for t in 1:num_timepoints
+        step_dynamics!(x_hat_next, @view(X[:, t]), @view(c[:, t]), F) # this works correctly
+        residuals .= @view(X[:, t+1]) .- x_hat_next
+        mul!(temp_gradient, residuals, @view(X[:, t])')
 
         for i in axes(F, 1)
             axpy!(c[i, t], temp_gradient, @view(gradient_sum[i, :, :]))
@@ -145,6 +145,9 @@ function update_F!(
     for i in axes(F, 1)
         grad_i = @view(gradient_sum[i, :, :])
         grad_i ./= num_timepoints
+        if opnorm(grad_i) > 1               # cap gradient if too large
+            normalize_matrix!(grad_i)
+        end
         for j in axes(F, 1)
             if i !== j
                 # compute the trace without a new implicit allocation
