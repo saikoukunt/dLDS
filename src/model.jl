@@ -1,4 +1,4 @@
-# NOTE: this function is parallelizable if we do Jacobi updates instead of Gauss-Siedel
+# NOTE: this function is parallelizable across time if we do Jacobi updates instead of Gauss-Siedel
 """
     update_c!(c, FX_prod, X, F, smooth_coeff, l1_coeff; max_iter, tol, warm_start)
 
@@ -101,6 +101,8 @@ function ProximalAlgorithms.value_and_gradient(
     end
 end
 
+# TODO: look into parallelizing this across trials with @distributed
+# TODO: can also parallelize across time with @threads.threads
 """
     update_F!(F, gradient_sum, temp_gradient, x_hat_next, residuals, X, c, lr_F; normalize_gradient, normalize_F)
 
@@ -145,6 +147,7 @@ function update_F!(
     for i in axes(F, 1)
         grad_i = @view(gradient_sum[i, :, :])
         grad_i ./= num_timepoints
+        # this is important to make it better than MATLAB code
         if opnorm(grad_i) > 1               # cap gradient if too large
             normalize_matrix!(grad_i)
         end

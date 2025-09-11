@@ -4,8 +4,8 @@ function simulate_two_subsystems_no_obs(
     num_motifs_per_system::AbstractVector{Int},
     num_trials::Int;
     switching::Bool = true,
-    min_switch_time::Int = 100,
-    max_extra_switch_time::Int = 300,
+    min_switch_time::Int = 50,
+    max_extra_switch_time::Int = 100,
 )
     num_neurons = sum(num_neurons_per_system)
     num_motifs = sum(num_motifs_per_system)

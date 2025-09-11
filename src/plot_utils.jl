@@ -6,10 +6,21 @@ function plot_Fs(
 ) where {T<:AbstractFloat}
     plots = []
     for i in axes(F, 1)
-        push!(plots, heatmap(F[i, :, :], aspect_ratio = :equal, legend = false))
+        push!(
+            plots,
+            heatmap(F[i, :, :], aspect_ratio = :equal, legend = false, clim = (-1, 1)),
+        )
     end
     for i in axes(F_hat, 1)
-        push!(plots, heatmap(F_hat[i, :, :], aspect_ratio = :equal, legend = false))
+        push!(
+            plots,
+            heatmap(
+                F_hat[i, :, :],
+                aspect_ratio = :equal,
+                legend = false,
+                clim = (-1, 1),
+            ),
+        )
     end
     plot(
         plots...,
