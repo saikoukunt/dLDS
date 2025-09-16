@@ -1,6 +1,90 @@
-# NOTE: this function is parallelizable across time if we do Jacobi updates instead of Gauss-Siedel
+function update_c_threaded!(
+    c::AbstractArray{T,3},
+    FX_prod::AbstractArray{T,3},
+    FX_prod_gram::AbstractArray{T,3},
+    X::Vector{<:AbstractMatrix{T}},
+    F::AbstractArray{T,3};
+    smooth_coeff::T = zero(T),
+    l1_coeff::T = zero(T),
+    max_iter::Int = 3000,
+    tol::T = 1e-8,
+    warm_start::Bool = false,
+) where {T<:AbstractFloat}
+    @threads for trial in axes(X, 1)
+        thread_id = threadid()
+
+        update_c!(
+            @view(c[trial, :, :]),
+            @view(FX_prod[:, :, thread_id]),
+            @view(FX_prod_gram[:, :, thread_id]),
+            X[trial],
+            F;
+            smooth_coeff = smooth_coeff,
+            l1_coeff = l1_coeff,
+            max_iter = max_iter,
+            tol = tol,
+            warm_start = warm_start,
+        )
+    end
+end
+
+function update_c_distributed!(
+    c::AbstractArray{T,3},
+    trial_data::Vector{<:AbstractMatrix{T}},
+    F::AbstractArray{T,3};
+    smooth_coeff::T = zero(T),
+    l1_coeff::T = zero(T),
+    max_iter::Int = 3000,
+    tol::T = 1e-8,
+    warm_start::Bool = false,
+) where {T<:AbstractFloat}
+    all_trials_data = [
+        (
+            @view(c[trial, :, :]),
+            trial_data[trial],
+            F,
+            (
+                smooth_coeff = smooth_coeff,
+                l1_coeff = l1_coeff,
+                max_iter = max_iter,
+                tol = tol,
+                warm_start = warm_start,
+            ),
+        ) for trial in axes(trial_data, 1)
+    ]
+
+    results = pmap(worker_update_c, all_trials_data)
+
+    for trial in axes(results, 1)
+        c[trial, :, :] = results[trial]
+    end
+
+    return c
+end
+
+function worker_update_c(
+    trial_data::Tuple{
+        <:AbstractMatrix{T},
+        <:AbstractMatrix{T},
+        <:AbstractArray{T,3},
+        NamedTuple,
+    },
+) where {T<:AbstractFloat}
+    c, X, F, kwargs = trial_data
+
+    num_latents = size(X, 1)
+    num_motifs = size(F, 1)
+
+    FX_prod = Matrix{T}(undef, num_latents, num_motifs)
+    FX_prod_gram = Matrix{T}(undef, num_motifs, num_motifs)
+
+    update_c!(c, FX_prod, FX_prod_gram, X, F, kwargs...)
+
+    return c
+end
+
 """
-    update_c!(c, FX_prod, X, F, smooth_coeff, l1_coeff; max_iter, tol, warm_start)
+    update_c!(c, FX_prod, FX_prod_gram, X, F, smooth_coeff, l1_coeff; max_iter, tol, warm_start)
 
 Calculates an update estimate of dynamics motif coefficients.
 
@@ -8,6 +92,7 @@ Calculates an update estimate of dynamics motif coefficients.
 
 - `c`: Dynamics coefficient history of the system.
 - `FX_prod`: A preallocated (# of latents X # of motifs) matrix to hold intermediate results.
+- `FX_prod_gram`: A preallocated (# of motifs X # of motifs) matrix to hold intermediate results
 - `X`: Latent state history of the system.
 - `F`: Dynamics motif matrices.
 - `smooth_coeff`: Coefficient for c smoothness penalty.
@@ -134,7 +219,7 @@ function update_F!(
     num_timepoints = size(X, 2) - 1
     # Calculate the sum of the latent reconstruction gradients over time w.r.t each F
     for t in 1:num_timepoints
-        step_dynamics!(x_hat_next, @view(X[:, t]), @view(c[:, t]), F) # this works correctly
+        step_dynamics!(x_hat_next, @view(X[:, t]), @view(c[:, t]), F)
         residuals .= @view(X[:, t+1]) .- x_hat_next
         mul!(temp_gradient, residuals, @view(X[:, t])')
 
@@ -147,7 +232,6 @@ function update_F!(
     for i in axes(F, 1)
         grad_i = @view(gradient_sum[i, :, :])
         grad_i ./= num_timepoints
-        # this is important to make it better than MATLAB code
         if opnorm(grad_i) > 1               # cap gradient if too large
             normalize_matrix!(grad_i)
         end
@@ -242,7 +326,7 @@ function update_D!(
         tmp .= Y .- tmp
         mul!(reconstruction_grad, tmp, X', true, false)     # (Y - DX)X'
 
-        sign_penalty = sum(sign.(D))
+        sign_penalty = mapreduce(sign, +, D)
         @. D -=
             lr_D * (
                 (-2 * reconstruction_grad) +
