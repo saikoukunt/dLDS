@@ -120,7 +120,7 @@ function fit_full_model(
     return D, F, X, c, latent_recon_err
 end
 
-function fit_no_obs_model(
+function fit_no_obs_model_distributed(
     X::AbstractMatrix{T},
     num_motifs::Int;
     random_seed::Int = 0,
@@ -139,10 +139,11 @@ function fit_no_obs_model(
     F_noise_sigma::T = T(0.1),
     F_init_max_corr::T = zero(T),
     F_lr_decay::T = T(0.99995),
+    num_snippets::Int = size(X, 1),
+    samples_per_snippet::Int = 200,
     verbose::Bool = true,
 ) where {T<:AbstractFloat}
-    num_latents::Int = size(X, 1)
-    num_timepoints::Int = size(X, 2)
+    num_latents::Int = size(X, 2)
 
     # Initialize model parameters and state
     F::Array{T,3} = init_matrix(
@@ -153,7 +154,7 @@ function fit_no_obs_model(
     #validate_F_separation!(F_init_max_corr) #TODO: Implement this
     c::Matrix{T} = init_matrix(
         InitDistribution.Normal(),
-        (num_motifs, num_timepoints - 1),
+        (num_snippets, num_motifs, samples_per_snippet - 1),
         random_seed,
     )
 
@@ -161,21 +162,18 @@ function fit_no_obs_model(
     i::Int = 1
     latent_recon_err = Inf
 
-    FX_prod::Matrix{T} = Matrix{T}(undef, num_latents, num_motifs) # for update_c!
-    FX_prod_gram::Matrix{T} = Matrix{T}(undef, num_motifs, num_motifs)
     gradient_sum::Array{T,3} = similar(F)                          # for update f! 
     temp_gradient::Matrix{T} = Matrix{T}(undef, num_latents, num_latents)
     x_hat_next::Vector{T} = Vector{T}(undef, num_latents)
     update_F_residuals::Vector{T} = Vector{T}(undef, num_latents)
 
     while (latent_recon_err > recon_threshold) && (i <= max_iter)
+        trial_data = sample_snippets(X, num_snippets, samples_per_snippet)
+
         F_old = copy(F)
-        c_l1_coeff *= c_l1_coeff_decay
-        update_c!(
+        update_c_distributed!(
             c,
-            FX_prod,
-            FX_prod_gram,
-            X,
+            trial_data,
             F,
             smooth_coeff = c_smooth_coeff,
             l1_coeff = c_l1_coeff;
@@ -197,6 +195,101 @@ function fit_no_obs_model(
             decorr_coeff = F_decorr_coeff,
         )
         F_lr *= F_lr_decay
+        c_l1_coeff *= c_l1_coeff_decay
+
+        if verbose
+            latent_recon_err = calculate_latent_recon_error!(x_hat_next, F, X, c)
+            dF = calculate_delta_F(F, F_old)
+            println("Iter $(i): Rec. Error: $(latent_recon_err),  dF: $(dF) ")
+        end
+        i += 1
+    end
+
+    return F, c
+end
+
+function fit_no_obs_model_threaded(
+    X::AbstractMatrix{T},
+    num_motifs::Int;
+    random_seed::Int = 0,
+    max_iter::Int = 3000,
+    recon_threshold::T = T(1e-3),
+    c_l1_coeff::T = zero(T),
+    c_l1_coeff_decay::T = T(1),
+    c_smooth_coeff::T = zero(T),
+    c_fista_tol::T = T(1e-8),
+    c_fista_max_iter::Int = 1000,
+    c_fista_warm_start::Bool = true,
+    F_lr_init::T = T(0.03),
+    F_normalize_matrix::Bool = true,
+    F_decorr_coeff::T = 0.2,
+    F_perturb_threshold::T = T(1e-5),
+    F_noise_sigma::T = T(0.1),
+    F_init_max_corr::T = zero(T),
+    F_lr_decay::T = T(0.99995),
+    num_snippets::Int = size(X, 1),
+    samples_per_snippet::Int = 200,
+    verbose::Bool = true,
+) where {T<:AbstractFloat}
+    num_latents::Int = size(X, 2)
+
+    # Initialize model parameters and state
+    F::Array{T,3} = init_matrix(
+        InitDistribution.Normal(),
+        (num_motifs, num_latents, num_latents),
+        random_seed,
+    )
+    #validate_F_separation!(F_init_max_corr) #TODO: Implement this
+    c::Matrix{T} = init_matrix(
+        InitDistribution.Normal(),
+        (num_snippets, num_motifs, samples_per_snippet - 1),
+        random_seed,
+    )
+
+    F_lr::T = F_lr_init
+    i::Int = 1
+    latent_recon_err = Inf
+
+    num_threads = nthreads()
+
+    FX_prod = Array{T,3}(undef, num_threads, num_latents, num_motifs) # for update_c!
+    FX_prod_gram = Array{T,3}(undef, num_threads, num_motifs, num_motifs)
+    gradient_sum::Array{T,3} = similar(F)                          # for update f! 
+    temp_gradient::Matrix{T} = Matrix{T}(undef, num_latents, num_latents)
+    x_hat_next::Vector{T} = Vector{T}(undef, num_latents)
+    update_F_residuals::Vector{T} = Vector{T}(undef, num_latents)
+
+    while (latent_recon_err > recon_threshold) && (i <= max_iter)
+        trial_data = sample_snippets(X, num_snippets, samples_per_snippet)
+
+        F_old = copy(F)
+        update_c_threaded!(
+            c,
+            FX_prod,
+            FX_prod_gram,
+            trial_data,
+            F,
+            smooth_coeff = c_smooth_coeff,
+            l1_coeff = c_l1_coeff;
+            tol = c_fista_tol,
+            max_iter = c_fista_max_iter,
+            warm_start = i > 1 ? c_fista_warm_start : false,
+        )
+
+        update_F!(
+            F,
+            gradient_sum,
+            temp_gradient,
+            x_hat_next,
+            update_F_residuals,
+            X,
+            c,
+            F_lr;
+            normalize_F = F_normalize_matrix,
+            decorr_coeff = F_decorr_coeff,
+        )
+        F_lr *= F_lr_decay
+        c_l1_coeff *= c_l1_coeff_decay
 
         if verbose
             latent_recon_err = calculate_latent_recon_error!(x_hat_next, F, X, c)
