@@ -1,34 +1,4 @@
-function update_c_threaded!(
-    c::AbstractArray{T,3},
-    FX_prod::AbstractArray{T,3},
-    FX_prod_gram::AbstractArray{T,3},
-    X::Vector{<:AbstractMatrix{T}},
-    F::AbstractArray{T,3};
-    smooth_coeff::T = zero(T),
-    l1_coeff::T = zero(T),
-    max_iter::Int = 3000,
-    tol::T = 1e-8,
-    warm_start::Bool = false,
-) where {T<:AbstractFloat}
-    @threads for trial in axes(X, 1)
-        thread_id = threadid()
-
-        update_c!(
-            @view(c[trial, :, :]),
-            @view(FX_prod[:, :, thread_id]),
-            @view(FX_prod_gram[:, :, thread_id]),
-            X[trial],
-            F;
-            smooth_coeff = smooth_coeff,
-            l1_coeff = l1_coeff,
-            max_iter = max_iter,
-            tol = tol,
-            warm_start = warm_start,
-        )
-    end
-end
-
-function update_c_distributed!(
+function parallel_update_c!(
     c::AbstractArray{T,3},
     trial_data::Vector{<:AbstractMatrix{T}},
     F::AbstractArray{T,3};
@@ -78,7 +48,7 @@ function worker_update_c(
     FX_prod = Matrix{T}(undef, num_latents, num_motifs)
     FX_prod_gram = Matrix{T}(undef, num_motifs, num_motifs)
 
-    update_c!(c, FX_prod, FX_prod_gram, X, F, kwargs...)
+    update_c!(c, FX_prod, FX_prod_gram, X, F; kwargs...)
 
     return c
 end
@@ -258,7 +228,7 @@ function update_F!(
     end
 end
 
-# TODO: Think about if we should do cv lasso instead
+# TODO: Fuse this with update_c via stacking
 """
     update_X(X, D, Y, lambda_l1=0.0)
 
