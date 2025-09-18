@@ -121,7 +121,7 @@ function fit_full_model(
 end
 
 function fit_no_obs_model(
-    X::AbstractMatrix{T},
+    X::AbstractArray{T,3},
     num_motifs::Int;
     random_seed::Int = 0,
     max_iter::Int = 3000,
@@ -131,7 +131,7 @@ function fit_no_obs_model(
     c_smooth_coeff::T = zero(T),
     c_fista_tol::T = T(1e-8),
     c_fista_max_iter::Int = 1000,
-    c_fista_warm_start::Bool = true,
+    c_fista_warm_start::Bool = false,
     F_lr_init::T = T(0.03),
     F_normalize_matrix::Bool = true,
     F_decorr_coeff::T = 0.2,
@@ -141,8 +141,8 @@ function fit_no_obs_model(
     F_lr_decay::T = T(0.99995),
     verbose::Bool = true,
 ) where {T<:AbstractFloat}
-    num_latents::Int = size(X, 1)
-    num_timepoints::Int = size(X, 2)
+    num_latents::Int = size(X[1, :, :], 1)
+    num_timepoints::Int = size(X[1, :, :], 2)
 
     # Initialize model parameters and state
     F::Array{T,3} = init_matrix(
@@ -151,11 +151,16 @@ function fit_no_obs_model(
         random_seed,
     )
     #validate_F_separation!(F_init_max_corr) #TODO: Implement this
-    c::Matrix{T} = init_matrix(
-        InitDistribution.Normal(),
-        (num_motifs, num_timepoints - 1),
-        random_seed,
-    )
+    # c::Matrix{T} = init_matrix(
+    #     InitDistribution.Normal(),
+    #     (num_motifs, num_timepoints - 1),
+    #     random_seed,
+    # )
+
+    c = Vector{Matrix{T}}(undef, 50)
+    for i in 1:50
+        c[i] = Matrix{T}(undef, num_motifs, num_timepoints - 1)
+    end
 
     F_lr::T = F_lr_init
     i::Int = 1
@@ -171,18 +176,32 @@ function fit_no_obs_model(
     while (latent_recon_err > recon_threshold) && (i <= max_iter)
         F_old = copy(F)
         c_l1_coeff *= c_l1_coeff_decay
-        update_c!(
-            c,
-            FX_prod,
-            FX_prod_gram,
-            X,
+
+        c[1] = worker_update_c((
+            c[1],
+            X[1, :, :],
             F,
-            smooth_coeff = c_smooth_coeff,
-            l1_coeff = c_l1_coeff;
-            tol = c_fista_tol,
-            max_iter = c_fista_max_iter,
-            warm_start = i > 1 ? c_fista_warm_start : false,
-        )
+            (
+                smooth_coeff = c_smooth_coeff,
+                l1_coeff = c_l1_coeff,
+                tol = c_fista_tol,
+                max_iter = c_fista_max_iter,
+                warm_start = i > 1 ? c_fista_warm_start : false,
+            ),
+        ))
+
+        # update_c!(
+        #     c,
+        #     FX_prod,
+        #     FX_prod_gram,
+        #     X,
+        #     F,
+        #     smooth_coeff = c_smooth_coeff,
+        #     l1_coeff = c_l1_coeff;
+        #     tol = c_fista_tol,
+        #     max_iter = c_fista_max_iter,
+        #     warm_start = i > 1 ? c_fista_warm_start : false,
+        # )
 
         update_F!(
             F,
@@ -190,8 +209,8 @@ function fit_no_obs_model(
             temp_gradient,
             x_hat_next,
             update_F_residuals,
-            X,
-            c,
+            X[1, :, :],
+            c[1],
             F_lr;
             normalize_F = F_normalize_matrix,
             decorr_coeff = F_decorr_coeff,
@@ -199,7 +218,8 @@ function fit_no_obs_model(
         F_lr *= F_lr_decay
 
         if verbose
-            latent_recon_err = calculate_latent_recon_error!(x_hat_next, F, X, c)
+            latent_recon_err =
+                calculate_latent_recon_error!(x_hat_next, F, X[1, :, :], c[1])
             dF = calculate_delta_F(F, F_old)
             println("Iter $(i): Rec. Error: $(latent_recon_err),  dF: $(dF) ")
         end

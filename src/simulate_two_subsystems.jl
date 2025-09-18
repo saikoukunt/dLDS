@@ -50,27 +50,31 @@ function simulate_two_switching_systems(
     num_neurons = sum(num_neurons_per_system)
     num_motifs = sum(num_motifs_per_system)
 
-    X = zeros(Float64, num_trials, num_neurons, num_timepoints)
-    c = zeros(Float64, num_trials, num_motifs, num_timepoints)
+    X = Vector{Matrix{T}}(undef, num_trials)
+    c = Vector{Matrix{T}}(undef, num_trials)
+    for trial in num_trials
+        X[trial] = zeros(num_neurons, num_timepoints)
+        c[trial] = zeros(num_neurons, num_timepoints)
+    end
 
     for trial in 1:num_trials
         generate_switching_c!(
-            @view(c[trial, 1:num_motifs_per_system[1], :]),
+            @view(c[trial][1:num_motifs_per_system[1], :]),
             num_timepoints,
             num_motifs_per_system[1];
             min_switch_time = min_switch_time,
             max_extra_switch_time = max_extra_switch_time,
         )
         generate_switching_c!(
-            @view(c[trial, num_motifs_per_system[1]+1:end, :]),
+            @view(c[trial][num_motifs_per_system[1]+1:end, :]),
             num_timepoints,
             num_motifs_per_system[2];
             min_switch_time = min_switch_time,
             max_extra_switch_time = max_extra_switch_time,
         )
         F_t = generate_two_subsystem_state_trajectory!(
-            @view(X[trial, :, :]),
-            @view(c[trial, :, :]),
+            @view(X[trial]),
+            @view(c[trial]),
             F,
             num_timepoints,
             num_neurons_per_system,

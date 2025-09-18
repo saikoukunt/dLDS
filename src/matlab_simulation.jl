@@ -70,15 +70,18 @@ function generate_random_switched_system(
 ) where {T<:AbstractFloat}
     total_neurons = sum(num_neurons)
     total_motifs = size(top_rows, 1) + size(bottom_rows, 1)
-    c = Array{T,3}(undef, num_trials, total_motifs, num_timepoints)
-    X = Array{T,3}(undef, num_trials, total_neurons, num_timepoints)
 
-    fill!(c, 0.0)
-    fill!(X, 1.0)
+    c = Vector{Matrix{T}}(undef, num_trials)
+    X = Vector{Matrix{T}}(undef, num_trials)
+
+    for trial in axes(c, 1)
+        c[trial] = zeros(total_motifs, num_timepoints)
+        X[trial] = ones(total_neurons, num_timepoints)
+    end
 
     for trial in 1:num_trials
-        X[trial, :, 1] .= randn(total_neurons)
-        X[trial, :, 1] ./= norm(X[trial, :, 1])
+        X[trial][:, 1] .= randn(total_neurons)
+        X[trial][:, 1] ./= norm(X[trial][:, 1])
 
         t_now = 0
         while t_now < num_timepoints - 1
@@ -87,28 +90,28 @@ function generate_random_switched_system(
             F, selF = make_F(top_rows, bottom_rows)
 
             # re-initalize parts of X_t if necessary and normalize
-            if all(iszero.(X[trial, 1:num_neurons[1], t_now+1]))
-                X[trial, 1:num_neurons[1], t_now+1] = randn(num_neurons[1])
+            if all(iszero.(X[trial][1:num_neurons[1], t_now+1]))
+                X[trial][1:num_neurons[1], t_now+1] = randn(num_neurons[1])
             end
-            if all(iszero.(X[trial, num_neurons[1]+1:end, t_now+1]))
-                X[trial, num_neurons[1]+1:end, t_now+1] = randn(num_neurons[2])
+            if all(iszero.(X[trial][num_neurons[1]+1:end, t_now+1]))
+                X[trial][num_neurons[1]+1:end, t_now+1] = randn(num_neurons[2])
             end
-            X[trial, 1:num_neurons[1], t_now+1] ./=
-                norm(X[trial, 1:num_neurons[1], t_now+1])
-            X[trial, num_neurons[1]+1:end, t_now+1] ./
-            norm(X[trial, num_neurons[1]+1:end, t_now+1])
+            X[trial][1:num_neurons[1], t_now+1] ./=
+                norm(X[trial][1:num_neurons[1], t_now+1])
+            X[trial][num_neurons[1]+1:end, t_now+1] ./
+            norm(X[trial][num_neurons[1]+1:end, t_now+1])
 
             # evolve state according to selected dynamics
             for t in t_now+1:t_now+t_jump
-                X[trial, :, t+1] = F * X[trial, :, t]
+                X[trial][:, t+1] = F * X[trial][:, t]
             end
 
             # update c matrix
             if selF[1] > 0
-                c[trial, selF[1], t_now+1:t_now+t_jump+1] .= 1
+                c[trial][selF[1], t_now+1:t_now+t_jump+1] .= 1
             end
             if selF[2] > 0
-                c[trial, size(top_rows, 1)+selF[2], t_now+1:t_now+t_jump+1] .= 1
+                c[trial][size(top_rows, 1)+selF[2], t_now+1:t_now+t_jump+1] .= 1
             end
 
             t_now = t_now + t_jump
