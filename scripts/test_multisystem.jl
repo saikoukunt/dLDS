@@ -1,4 +1,6 @@
 using DLDS
+using LinearAlgebra
+LinearAlgebra.BLAS.set_num_threads(1)
 
 # X, c, F = simulate_two_subsystems_no_obs(3000, [4, 4], [3, 3], 50)
 X, c, F = matlab_simulation(3000, [4, 4], [3, 3], 50)
@@ -14,7 +16,6 @@ x_hat_next = Vector{T}(undef, 8)
 
 for i in 1:750
     trial_data = (
-        c_hat[1],
         X_trial[1],
         F,
         (

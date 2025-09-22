@@ -8,18 +8,32 @@ function update_c_parallel!(
     tol::T = 1e-8,
     warm_start::Bool = false,
 ) 
+    trial_data = [
+        trial_data = (
+        X_trial[i],
+        F,
+        (
+            smooth_coeff = 0.2,
+            l1_coeff = 0.2,
+            max_iter = 3000,
+            tol = 1e-8,
+            warm_start = false,
+        ),
+    ) for i in axes(X_trial, 1)
+    ]
+
+    results = pmap()
     
 end
 
 function worker_update_c(
     trial_data::Tuple{
         <:AbstractMatrix{T},
-        <:AbstractMatrix{T},
         <:AbstractArray{T,3},
         NamedTuple,
     },
 ) where {T<:AbstractFloat}
-    c, X, F, kwargs = trial_data
+    X, F, kwargs = trial_data
 
     num_latents = size(X, 1)
     num_motifs = size(F, 1)
@@ -27,9 +41,8 @@ function worker_update_c(
     FX_prod = Matrix{T}(undef, num_latents, num_motifs)
     FX_prod_gram = Matrix{T}(undef, num_motifs, num_motifs)
 
-    update_c!(c, FX_prod, FX_prod_gram, X, F; kwargs...)
+    return update_c!(zeros(axes(F, 1)), FX_prod, FX_prod_gram, X, F; kwargs...)
 
-    return c
 end
 
 # NOTE: this function is parallelizable across time if we do Jacobi updates instead of Gauss-Siedel
