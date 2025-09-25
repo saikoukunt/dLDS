@@ -19,8 +19,8 @@ export simulate_two_subsystems_no_obs
 export InitDistribution,
     init_matrix, calculate_latent_recon_error!, step_dynamics!, calculate_delta_F
 export plot_cs, plot_Fs
-export matlab_update_F!, matlab_simulation
-export sample_snippets, worker_update_c, update_c_parallel!, update_c_threaded!
+export matlab_simulation
+export sample_snippets, worker_update_c, update_c_parallel!
 
 include("./matrix_utils.jl")
 include("./simulation_utils.jl")

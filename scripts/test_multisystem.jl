@@ -1,7 +1,7 @@
 using Distributed
 addprocs(11)
 
-# @everywhere using LinearAlgebra
+@everywhere using LinearAlgebra
 @everywhere using DLDS
 # @everywhere LinearAlgebra.BLAS.set_num_threads(1)
 using BenchmarkTools
@@ -12,13 +12,47 @@ num_motifs = 6
 num_latents = 8
 T = Float64
 
-X_trial, c_trial = sample_snippets(X, c, 50, 200)
-c_hat = Vector{Matrix{T}}(undef, 50)
-for tr in axes(c_hat, 1)
-    c_hat[tr] = zeros(num_motifs, 199)
-end
+F = fit_no_obs_model(X, num_motifs)
 
-x_hat_next = Vector{T}(undef, 8)
+
+X_trial, c_trial = sample_snippets(X, c, 500, 200)
+# c_hat = Vector{Matrix{T}}(undef, 50)
+# for tr in axes(c_hat, 1)
+#     c_hat[tr] = zeros(num_motifs, 199)
+# end
+
+F_hat::Array{T,3} = init_matrix(
+        InitDistribution.Normal(),
+        (num_motifs, num_latents, num_latents),
+        0,
+    )
+
+gradient_sum::Array{T,3} = similar(F)                          # for update f! 
+temp_gradient::Matrix{T} = Matrix{T}(undef, num_latents, num_latents)
+x_hat_next::Vector{T} = Vector{T}(undef, num_latents)
+update_F_residuals::Vector{T} = Vector{T}(undef, num_latents)
+
+@benchmark(
+    update_F!(
+        $F_hat,
+        $gradient_sum,
+        $temp_gradient,
+        $x_hat_next,
+        $update_F_residuals,
+        $X_trial,
+        $c_trial,
+        1.0,
+    )
+)
+
+@benchmark(
+    update_F_parallel!(
+        $F_hat,
+        $X_trial,
+        $c_trial,
+        1.0
+    )
+)
 
 @benchmark(
     update_c_parallel!(
