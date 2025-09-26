@@ -24,6 +24,9 @@ function update_c_parallel!(
 
     for i in axes(c, 1)
         c[i] = results[i]
+        if any(isnan.(c[i]))
+            println("trial $(i)")
+        end
     end
 end
 
@@ -103,9 +106,15 @@ function update_c!(
 
         solution, iters =
             solver(x0 = zero_guess, f = double_lsq, g = l1_penalty, Lf = L)
+        if any(isnan.(solution))
+            solution = ones(size(solution))
+        end
 
         @. lambda_l1 = l1_coeff / (1 + 200 * (abs(solution))) # reweight L1 to correct for bias
         solution, iters = solver(x0 = solution, f = double_lsq, g = l1_penalty, Lf = L)
+        if any(isnan.(solution))
+            solution = ones(size(solution))
+        end
 
         c[:, t] = solution
     end
@@ -180,7 +189,7 @@ function update_F!(
     num_timepoints = size(X[1], 2) - 1
 
     # Calculate the sum of the latent reconstruction gradients over time w.r.t each F
-    for trial in axes(c,1)
+    for trial in axes(c, 1)
         for t in 1:num_timepoints
             step_dynamics!(x_hat_next, @view(X[trial][:, t]), @view(c[trial][:, t]), F) # this works correctly
             residuals .= @view(X[trial][:, t+1]) .- x_hat_next
@@ -228,7 +237,6 @@ function update_F!(
     end
 end
 
-
 function update_F_parallel!(
     F::AbstractArray{T,3},
     X::Vector{<:AbstractMatrix{T}},
@@ -239,14 +247,14 @@ function update_F_parallel!(
 ) where {T<:AbstractFloat}
     num_timepoints = size(X[1], 2) - 1
     # Calculate the sum of the latent reconstruction gradients over time w.r.t each F
-    gradient_sum = @sync @distributed (+) for trial in axes(c,1)
+    gradient_sum = @sync @distributed (+) for trial in axes(c, 1)
         accum = zeros(size(F))
         temp_gradient = zeros(size(F, 2), size(F, 3))
         x_hat_next = zeros(size(F, 2))
         residuals = zeros(size(F, 2))
 
         for t in 1:num_timepoints
-            step_dynamics!(x_hat_next, @view(X[trial][:, t]), @view(c[trial][:, t]), F) 
+            step_dynamics!(x_hat_next, @view(X[trial][:, t]), @view(c[trial][:, t]), F)
             residuals .= @view(X[trial][:, t+1]) .- x_hat_next
             mul!(temp_gradient, residuals, @view(X[trial][:, t])')
 
@@ -287,7 +295,6 @@ function update_F_parallel!(
         end
     end
 end
-
 
 # TODO: Think about if we should do cv lasso instead
 """
