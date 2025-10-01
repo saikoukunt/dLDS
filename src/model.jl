@@ -106,15 +106,15 @@ function update_c!(
 
         solution, iters =
             solver(x0 = zero_guess, f = double_lsq, g = l1_penalty, Lf = L)
-        if any(isnan.(solution))
-            solution = ones(size(solution))
-        end
+        # if any(isnan.(solution))
+        #     solution = ones(size(solution))
+        # end
 
         @. lambda_l1 = l1_coeff / (1 + 200 * (abs(solution))) # reweight L1 to correct for bias
         solution, iters = solver(x0 = solution, f = double_lsq, g = l1_penalty, Lf = L)
-        if any(isnan.(solution))
-            solution = ones(size(solution))
-        end
+        # if any(isnan.(solution))
+        #     solution = ones(size(solution))
+        # end
 
         c[:, t] = solution
     end
@@ -182,7 +182,7 @@ function update_F!(
     X::Vector{<:AbstractMatrix{T}},
     c::Vector{<:AbstractMatrix{T}},
     lr_F::T;
-    decorr_coeff::T = T(0.2),
+    decorr_coeff::T = T(0),
     normalize_F::Bool = true,
 ) where {T<:AbstractFloat}
     fill!(gradient_sum, zero(T))
@@ -206,30 +206,28 @@ function update_F!(
         end
     end
 
-    # Normalize by # of timepoints and add the decorrelation term
-    for i in axes(F, 1)
-        grad_i = @view(gradient_sum[i, :, :])
-        grad_i ./= num_timepoints * size(c, 1)
-        # this is important to make it better than MATLAB code
-        if opnorm(grad_i) > 1               # cap gradient if too large
-            normalize_matrix!(grad_i)
-        end
-        for j in axes(F, 1)
-            if i !== j
-                # compute the trace without a new implicit allocation
-                trace = T(0)
-                for k in axes(F, 3)
-                    trace += dot(@view(F[i, :, k]), @view(F[j, :, k]))
-                end
+    # Take the step
+    F .+= lr_F / (num_timepoints * size(c, 1)) .* gradient_sum
 
-                # add the decorrelation term to the running gradient
-                axpy!(-decorr_coeff * trace / lr_F, F[j, :, :], grad_i)
+    # Decorrelate
+    gradient_sum .= 0
+    for i in axes(F, 1)
+        for j in axes(F, 1)
+            if i ≠ j
+                # # compute the trace without a new implicit allocation
+                # trace = T(0)
+                # for k in axes(F, 3)
+                #     trace += dot(@view(F[i, :, k]), @view(F[j, :, k]))
+                # end
+
+                # # add the decorrelation term to the running gradient
+                # axpy!(trace, F[j, :, :], grad_i)
+                gradient_sum[i, :, :] += tr(F[i, :, :]' * F[j, :, :]) * F[j, :, :]
             end
         end
     end
+    @. F -= decorr_coeff * gradient_sum
 
-    # Take the gradient steps
-    @. F += lr_F * gradient_sum
     for i in axes(F, 1)
         if normalize_F
             normalize_matrix!(@view(F[i, :, :]))

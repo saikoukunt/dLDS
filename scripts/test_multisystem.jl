@@ -1,5 +1,5 @@
 using Distributed
-addprocs(12 - nprocs())
+addprocs(10 - nprocs())
 
 @everywhere using LinearAlgebra
 @everywhere using DLDS
@@ -12,12 +12,7 @@ num_motifs = 6
 num_latents = 8
 T = Float64
 
-# F_hat = fit_no_obs_model(X, num_motifs)
-
-# c_hat = Vector{Matrix{T}}(undef, 50)
-# for tr in axes(c_hat, 1)
-#     c_hat[tr] = zeros(num_motifs, 199)
-# end
+@time F_hat = fit_no_obs_model(X, num_motifs, max_iter = 3000)
 
 F_hat::Array{T,3} =
     init_matrix(InitDistribution.Normal(), (num_motifs, num_latents, num_latents), 0)
@@ -27,49 +22,55 @@ temp_gradient::Matrix{T} = Matrix{T}(undef, num_latents, num_latents)
 x_hat_next::Vector{T} = Vector{T}(undef, num_latents)
 update_F_residuals::Vector{T} = Vector{T}(undef, num_latents)
 
-@benchmark(
-    update_F!(
-        $F_hat,
-        $gradient_sum,
-        $temp_gradient,
-        $x_hat_next,
-        $update_F_residuals,
-        $X,
-        $c,
-        1.0,
-    )
-)
-
-@benchmark(update_F_parallel!($F_hat, $X_trial, $c_trial, 1.0))
-
-@benchmark(
-    update_c_parallel!(
-        $c_hat,
-        $X_trial,
-        $F,
-        smooth_coeff = 0.2,
-        l1_coeff = 0.2,
-        max_iter = 3000,
-        tol = 1e-8,
-        warm_start = false,
-    )
-)
-
 for i in 1:750
-    update_c_parallel!(
-        c_hat,
-        X_trial,
-        F,
-        smooth_coeff = 0.2,
-        l1_coeff = 0.2,
-        max_iter = 3000,
-        tol = 1e-8,
-        warm_start = false,
+    X_snippets, indices = sample_snippets(X, 500, 200)
+    c_snippets = Vector{Matrix{Float64}}(undef, size(X_snippets, 1))
+    for i in axes(X_snippets, 1)
+        trial, t_start, t_end = indices[i]
+        c_snippets[i] = c[trial][:, t_start:t_end]
+    end
+
+    update_F!(
+        F_hat,
+        gradient_sum,
+        temp_gradient,
+        x_hat_next,
+        update_F_residuals,
+        X,
+        c,
+        1.0,
+        decorr_coeff = 0.0,
     )
 
     latent_recon_err =
-        calculate_latent_recon_error!(x_hat_next, F, X_trial[1], c_hat[1])
+        calculate_latent_recon_error!(x_hat_next, F_hat, X_snippets, c_snippets)
     println("Iter $(i) - Recon Err: $(latent_recon_err)")
 end
 
 plot_cs(c_hat[15], c_trial[15])
+
+decorr_coeff = 0.05
+F_hat_decorr = copy(F_hat)
+
+for t in 1:10
+    gradient_sum .= 0
+    for i in axes(F_hat_decorr, 1)
+        for j in axes(F_hat_decorr, 1)
+            if i ≠ j
+                # # compute the trace without a new implicit allocation
+                # trace = T(0)
+                # for k in axes(F, 3)
+                #     trace += dot(@view(F[i, :, k]), @view(F[j, :, k]))
+                # end
+
+                # # add the decorrelation term to the running gradient
+                # axpy!(trace, F[j, :, :], grad_i)
+                gradient_sum[i, :, :] +=
+                    decorr_coeff *
+                    tr(F_hat_decorr[i, :, :]' * F_hat_decorr[j, :, :]) *
+                    F_hat_decorr[j, :, :]
+            end
+        end
+    end
+    @. F_hat_decorr -= gradient_sum
+end

@@ -108,10 +108,10 @@ function generate_random_switched_system(
 
             # update c matrix
             if selF[1] > 0
-                c[trial][selF[1], t_now+1:t_now+t_jump+1] .= 1
+                c[trial][selF[1], t_now+1:t_now+t_jump] .= 1
             end
             if selF[2] > 0
-                c[trial][size(top_rows, 1)+selF[2], t_now+1:t_now+t_jump+1] .= 1
+                c[trial][size(top_rows, 1)+selF[2], t_now+1:t_now+t_jump] .= 1
             end
 
             t_now = t_now + t_jump
@@ -128,11 +128,11 @@ function make_F(
     num_top = size(top_rows, 1)
     num_bot = size(bot_rows, 1)
 
-    top_opt = rand(0:num_top)
-    bot_opt = rand(0:num_bot)
+    top_opt = rand(1:num_top)
+    bot_opt = rand(1:num_bot)
 
-    top_sel = iszero(top_opt) ? 0 * top_rows[1, :, :] : top_rows[top_opt, :, :]
-    bot_sel = iszero(bot_opt) ? 0 * bot_rows[1, :, :] : bot_rows[bot_opt, :, :]
+    top_sel = top_rows[top_opt, :, :]
+    bot_sel = bot_rows[bot_opt, :, :]
 
     F = cat(top_sel, bot_sel; dims = 1)
 
