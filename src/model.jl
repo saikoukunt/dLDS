@@ -53,7 +53,7 @@ end
 
 # NOTE: this function is parallelizable across time if we do Jacobi updates instead of Gauss-Siedel
 """
-    update_c!(c, FX_prod, X, F, smooth_coeff, l1_coeff; max_iter, tol, warm_start)
+    update_c!(c, FX_prod, FX_prod_gram, X, F, smooth_coeff, l1_coeff; max_iter, tol, warm_start)
 
 Calculates an update estimate of dynamics motif coefficients.
 
@@ -61,6 +61,7 @@ Calculates an update estimate of dynamics motif coefficients.
 
 - `c`: Dynamics coefficient history of the system.
 - `FX_prod`: A preallocated (# of latents X # of motifs) matrix to hold intermediate results.
+- `FX_prod_gram`: A preallocated (# of motifs X # of motifs) matrix to hold intermediate results
 - `X`: Latent state history of the system.
 - `F`: Dynamics motif matrices.
 - `smooth_coeff`: Coefficient for c smoothness penalty.
@@ -189,7 +190,7 @@ function update_F!(
     # Calculate the sum of the latent reconstruction gradients over time w.r.t each F
     for trial in axes(c, 1)
         for t in 1:num_timepoints
-            step_dynamics!(x_hat_next, @view(X[trial][:, t]), @view(c[trial][:, t]), F) 
+            step_dynamics!(x_hat_next, @view(X[trial][:, t]), @view(c[trial][:, t]), F)
             residuals .= @view(X[trial][:, t+1]) .- x_hat_next
             mul!(temp_gradient, residuals, @view(X[trial][:, t])')
 
@@ -227,7 +228,7 @@ function update_F!(
     end
 end
 
-# TODO: Think about if we should do cv lasso instead
+# TODO: Fuse this with update_c via stacking
 """
     update_X(X, D, Y, lambda_l1=0.0)
 
@@ -295,7 +296,7 @@ function update_D!(
         tmp .= Y .- tmp
         mul!(reconstruction_grad, tmp, X', true, false)     # (Y - DX)X'
 
-        sign_penalty = sum(sign.(D))
+        sign_penalty = mapreduce(sign, +, D)
         @. D -=
             lr_D * (
                 (-2 * reconstruction_grad) +

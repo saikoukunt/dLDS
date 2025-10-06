@@ -11,6 +11,7 @@ using Printf
 using GLMNet
 using Base.Threads
 using Distributed
+using Distributed
 
 export fit_full_model, fit_no_obs_model, infer_full_state, infer_no_obs_state
 export update_c!, update_D!, update_F!, update_X!

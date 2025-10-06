@@ -139,16 +139,15 @@ function fit_no_obs_model(
     F_noise_sigma::T = T(0.1),
     F_init_max_corr::T = zero(T),
     F_lr_decay::T = T(0.99995),
+    num_snippets::Int = size(X, 1),
+    samples_per_snippet::Int = 200,
     verbose::Bool = true,
 ) where {T<:AbstractFloat}
     num_latents::Int = size(X[1], 1)
     num_timepoints::Int = size(X[1], 2)
 
     # Initialize model parameters and state
-    F::Array{T,3} =
-        # create_random_dynamics(num_latents, num_motifs, correlation_tol = 0.1)
-
-    init_matrix(
+    F::Array{T,3} = init_matrix(
         InitDistribution.Normal(),
         (num_motifs, num_latents, num_latents),
         random_seed,
@@ -197,6 +196,7 @@ function fit_no_obs_model(
         )
         c_l1_coeff *= c_l1_coeff_decay
         F_lr *= F_lr_decay
+        c_l1_coeff *= c_l1_coeff_decay
 
         if verbose
             latent_recon_err =
