@@ -79,27 +79,29 @@ end
 
 # NOTE: removed exp normalization for now since it can't be done in place
 """
-    normalize_matrix!(A, norm_type=:eigen)
+    normalize_matrix!(A, norm_type=:opnorm)
 
 Applies the specified normalization to the matrix `A` in-place.
 
 # Arguments
 - `A::AbstractMatrix`: The matrix to normalize.
 - `norm_type::Symbol`: The type of normalization to apply. Options are:
-    - `:eigen`: Normalize by the largest eigenvalue.
+    - `:opnorm`: Normalize by the operator norm.
     - `:max`: Normalize by the maximum absolute value.
-    - `:exp`: Normalize using the matrix exponential.
+    - `:frobeniius`: Normalize using the Frobenius norm.
 """
 function normalize_matrix!(
     A::AbstractMatrix{<:AbstractFloat},
-    norm_type::Symbol = :eigen,
+    norm_type::Symbol = :opnorm,
 )
-    if norm_type == :eigen
+    if norm_type == :opnorm
         norm_factor = opnorm(A)
     elseif norm_type == :max
         norm_factor = maximum(abs.(A))
+    elseif norm_type == :frobenius
+        norm_factor = norm(A)
     else
-        error("Unknown normalization type: $norm_type. Use :eigen, :max, or :exp.")
+        error("Unknown normalization type: $norm_type. Use :opnorm, :max, or :exp.")
     end
 
     A ./= norm_factor

@@ -11,7 +11,7 @@ function fit_full_model(
     c_l1_coeff_decay::T = T(1),
     c_smooth_coeff::T = zero(T),
     c_fista_tol::T = T(1e-8),
-    c_fista_max_iter::Int = 1000,
+    c_fista_max_iter::Int = 3000,
     D_lr::T = T(30),
     D_sign_coeff::T = zero(T),
     D_frobenius_coeff::T = zero(T),
@@ -21,7 +21,7 @@ function fit_full_model(
     F_perturb_threshold::T = T(1e-5),
     F_noise_sigma::T = T(0.1),
     F_init_max_corr::T = zero(T),
-    F_lr_decay::T = T(0.999),
+    F_lr_decay::T = T(0.99995),
     verbose::Bool = true,
 ) where {T<:AbstractFloat}
     """
@@ -80,7 +80,6 @@ function fit_full_model(
                 l1_coeff = c_l1_coeff;
                 tol = c_fista_tol,
                 max_iter = c_fista_max_iter,
-                warm_start = i > 1 ? c_fista_warm_start : false,
             )
         end
 
@@ -120,21 +119,22 @@ function fit_full_model(
     return D, F, X, c, latent_recon_err
 end
 
-function fit_no_obs_model_distributed(
-    X::AbstractMatrix{T},
+function fit_no_obs_model(
+    X::Vector{<:AbstractMatrix{T}},
     num_motifs::Int;
+    samples_per_snippet::Int = 200,
+    num_snippets::Int = 50,
     random_seed::Int = 0,
-    max_iter::Int = 3000,
-    recon_threshold::T = T(1e-3),
-    c_l1_coeff::T = zero(T),
+    max_iter::Int = 5000,
+    recon_threshold::T = T(1e-5),
+    c_l1_coeff::T = T(0.2),
     c_l1_coeff_decay::T = T(1),
-    c_smooth_coeff::T = zero(T),
+    c_smooth_coeff::T = T(0.4),
     c_fista_tol::T = T(1e-8),
     c_fista_max_iter::Int = 1000,
-    c_fista_warm_start::Bool = true,
-    F_lr_init::T = T(0.03),
+    F_lr_init::T = T(1),
     F_normalize_matrix::Bool = true,
-    F_decorr_coeff::T = 0.2,
+    F_decorr_coeff::T = T(0.0),
     F_perturb_threshold::T = T(1e-5),
     F_noise_sigma::T = T(0.1),
     F_init_max_corr::T = zero(T),
@@ -143,7 +143,8 @@ function fit_no_obs_model_distributed(
     samples_per_snippet::Int = 200,
     verbose::Bool = true,
 ) where {T<:AbstractFloat}
-    num_latents::Int = size(X, 2)
+    num_latents::Int = size(X[1], 1)
+    num_timepoints::Int = size(X[1], 2)
 
     # Initialize model parameters and state
     F::Array{T,3} = init_matrix(
@@ -152,11 +153,11 @@ function fit_no_obs_model_distributed(
         random_seed,
     )
     #validate_F_separation!(F_init_max_corr) #TODO: Implement this
-    c::Matrix{T} = init_matrix(
-        InitDistribution.Normal(),
-        (num_snippets, num_motifs, samples_per_snippet - 1),
-        random_seed,
-    )
+
+    c = Vector{Matrix{T}}(undef, num_snippets)
+    for i in 1:num_snippets
+        c[i] = zeros(num_motifs, samples_per_snippet - 1)
+    end
 
     F_lr::T = F_lr_init
     i::Int = 1
@@ -167,19 +168,18 @@ function fit_no_obs_model_distributed(
     x_hat_next::Vector{T} = Vector{T}(undef, num_latents)
     update_F_residuals::Vector{T} = Vector{T}(undef, num_latents)
 
-    while (latent_recon_err > recon_threshold) && (i <= max_iter)
-        trial_data = sample_snippets(X, num_snippets, samples_per_snippet)
-
+    while (i <= max_iter)
         F_old = copy(F)
-        update_c_distributed!(
+        X_snippets, _ = sample_snippets(X, num_snippets, samples_per_snippet)
+
+        update_c_parallel!(
             c,
-            trial_data,
-            F,
+            X_snippets,
+            F;
             smooth_coeff = c_smooth_coeff,
-            l1_coeff = c_l1_coeff;
-            tol = c_fista_tol,
+            l1_coeff = c_l1_coeff,
             max_iter = c_fista_max_iter,
-            warm_start = i > 1 ? c_fista_warm_start : false,
+            tol = c_fista_tol,
         )
 
         update_F!(
@@ -188,118 +188,26 @@ function fit_no_obs_model_distributed(
             temp_gradient,
             x_hat_next,
             update_F_residuals,
-            X,
+            X_snippets,
             c,
             F_lr;
             normalize_F = F_normalize_matrix,
             decorr_coeff = F_decorr_coeff,
         )
+        c_l1_coeff *= c_l1_coeff_decay
         F_lr *= F_lr_decay
         c_l1_coeff *= c_l1_coeff_decay
 
         if verbose
-            latent_recon_err = calculate_latent_recon_error!(x_hat_next, F, X, c)
+            latent_recon_err =
+                calculate_latent_recon_error!(x_hat_next, F, X_snippets, c)
             dF = calculate_delta_F(F, F_old)
             println("Iter $(i): Rec. Error: $(latent_recon_err),  dF: $(dF) ")
         end
         i += 1
     end
 
-    return F, c
-end
-
-function fit_no_obs_model_threaded(
-    X::AbstractMatrix{T},
-    num_motifs::Int;
-    random_seed::Int = 0,
-    max_iter::Int = 3000,
-    recon_threshold::T = T(1e-3),
-    c_l1_coeff::T = zero(T),
-    c_l1_coeff_decay::T = T(1),
-    c_smooth_coeff::T = zero(T),
-    c_fista_tol::T = T(1e-8),
-    c_fista_max_iter::Int = 1000,
-    c_fista_warm_start::Bool = true,
-    F_lr_init::T = T(0.03),
-    F_normalize_matrix::Bool = true,
-    F_decorr_coeff::T = 0.2,
-    F_perturb_threshold::T = T(1e-5),
-    F_noise_sigma::T = T(0.1),
-    F_init_max_corr::T = zero(T),
-    F_lr_decay::T = T(0.99995),
-    num_snippets::Int = size(X, 1),
-    samples_per_snippet::Int = 200,
-    verbose::Bool = true,
-) where {T<:AbstractFloat}
-    num_latents::Int = size(X, 2)
-
-    # Initialize model parameters and state
-    F::Array{T,3} = init_matrix(
-        InitDistribution.Normal(),
-        (num_motifs, num_latents, num_latents),
-        random_seed,
-    )
-    #validate_F_separation!(F_init_max_corr) #TODO: Implement this
-    c::Matrix{T} = init_matrix(
-        InitDistribution.Normal(),
-        (num_snippets, num_motifs, samples_per_snippet - 1),
-        random_seed,
-    )
-
-    F_lr::T = F_lr_init
-    i::Int = 1
-    latent_recon_err = Inf
-
-    num_threads = nthreads()
-
-    FX_prod = Array{T,3}(undef, num_threads, num_latents, num_motifs) # for update_c!
-    FX_prod_gram = Array{T,3}(undef, num_threads, num_motifs, num_motifs)
-    gradient_sum::Array{T,3} = similar(F)                          # for update f! 
-    temp_gradient::Matrix{T} = Matrix{T}(undef, num_latents, num_latents)
-    x_hat_next::Vector{T} = Vector{T}(undef, num_latents)
-    update_F_residuals::Vector{T} = Vector{T}(undef, num_latents)
-
-    while (latent_recon_err > recon_threshold) && (i <= max_iter)
-        trial_data = sample_snippets(X, num_snippets, samples_per_snippet)
-
-        F_old = copy(F)
-        update_c_threaded!(
-            c,
-            FX_prod,
-            FX_prod_gram,
-            trial_data,
-            F,
-            smooth_coeff = c_smooth_coeff,
-            l1_coeff = c_l1_coeff;
-            tol = c_fista_tol,
-            max_iter = c_fista_max_iter,
-            warm_start = i > 1 ? c_fista_warm_start : false,
-        )
-
-        update_F!(
-            F,
-            gradient_sum,
-            temp_gradient,
-            x_hat_next,
-            update_F_residuals,
-            X,
-            c,
-            F_lr;
-            normalize_F = F_normalize_matrix,
-            decorr_coeff = F_decorr_coeff,
-        )
-        F_lr *= F_lr_decay
-        c_l1_coeff *= c_l1_coeff_decay
-
-        if verbose
-            latent_recon_err = calculate_latent_recon_error!(x_hat_next, F, X, c)
-            dF = calculate_delta_F(F, F_old)
-            println("Iter $(i): Rec. Error: $(latent_recon_err),  dF: $(dF) ")
-        end
-        i += 1
-    end
-
-    return F, c
+    return F
 end
 
 function infer_no_obs_state(
@@ -333,7 +241,6 @@ function infer_no_obs_state(
         l1_coeff = c_l1_coeff;
         tol = c_fista_tol,
         max_iter = c_fista_max_iter,
-        warm_start = false,
     )
 
     return c
@@ -379,19 +286,21 @@ end
 function calculate_latent_recon_error!(
     x_hat_next::AbstractVector{T},
     F::AbstractArray{T,3},
-    X::AbstractMatrix{T},
-    c::AbstractMatrix{T},
+    X::Vector{<:AbstractMatrix{T}},
+    c::Vector{<:AbstractMatrix{T}},
 ) where {T<:AbstractFloat}
     total_error::T = zero(T)
 
-    for t in 2:size(X, 2)-1
-        step_dynamics!(x_hat_next, @view(X[:, t-1]), @view(c[:, t]), F)
-        x_hat_next .= @view(X[:, t]) .- x_hat_next    # residual, reusing array to avoid extra allocation
+    for trial in axes(c, 1)
+        for t in 1:size(X[trial], 2)-1
+            step_dynamics!(x_hat_next, @view(X[trial][:, t]), @view(c[trial][:, t]), F)
+            x_hat_next .= @view(X[trial][:, t+1]) .- x_hat_next    # residual, reusing array to avoid extra allocation
 
-        total_error += dot(x_hat_next, x_hat_next)
+            total_error += dot(x_hat_next, x_hat_next)
+        end
     end
 
-    return total_error / sum(X .^ 2)
+    return total_error / sum([sum(X[trial] .^ 2) for trial in axes(c, 1)])
 end
 
 function calculate_delta_F(

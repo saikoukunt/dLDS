@@ -1,46 +1,39 @@
-function parallel_update_c!(
-    c::AbstractArray{T,3},
-    trial_data::Vector{<:AbstractMatrix{T}},
+function update_c_parallel!(
+    c::Vector{<:AbstractMatrix{T}},
+    X_trial::Vector{<:AbstractMatrix{T}},
     F::AbstractArray{T,3};
     smooth_coeff::T = zero(T),
     l1_coeff::T = zero(T),
     max_iter::Int = 3000,
     tol::T = 1e-8,
-    warm_start::Bool = false,
 ) where {T<:AbstractFloat}
-    all_trials_data = [
+    trial_data = [
         (
-            @view(c[trial, :, :]),
-            trial_data[trial],
+            X_trial[i],
             F,
             (
                 smooth_coeff = smooth_coeff,
                 l1_coeff = l1_coeff,
                 max_iter = max_iter,
                 tol = tol,
-                warm_start = warm_start,
             ),
-        ) for trial in axes(trial_data, 1)
+        ) for i in axes(X_trial, 1)
     ]
 
-    results = pmap(worker_update_c, all_trials_data)
+    results = pmap(worker_update_c, trial_data)
 
-    for trial in axes(results, 1)
-        c[trial, :, :] = results[trial]
+    for i in axes(c, 1)
+        c[i] = results[i]
+        if any(isnan.(c[i]))
+            println("trial $(i)")
+        end
     end
-
-    return c
 end
 
 function worker_update_c(
-    trial_data::Tuple{
-        <:AbstractMatrix{T},
-        <:AbstractMatrix{T},
-        <:AbstractArray{T,3},
-        NamedTuple,
-    },
+    trial_data::Tuple{<:AbstractMatrix{T},<:AbstractArray{T,3},NamedTuple},
 ) where {T<:AbstractFloat}
-    c, X, F, kwargs = trial_data
+    X, F, kwargs = trial_data
 
     num_latents = size(X, 1)
     num_motifs = size(F, 1)
@@ -48,11 +41,17 @@ function worker_update_c(
     FX_prod = Matrix{T}(undef, num_latents, num_motifs)
     FX_prod_gram = Matrix{T}(undef, num_motifs, num_motifs)
 
-    update_c!(c, FX_prod, FX_prod_gram, X, F; kwargs...)
-
-    return c
+    return update_c!(
+        zeros(size(F, 1), size(X, 2) - 1),
+        FX_prod,
+        FX_prod_gram,
+        X,
+        F;
+        kwargs...,
+    )
 end
 
+# NOTE: this function is parallelizable across time if we do Jacobi updates instead of Gauss-Siedel
 """
     update_c!(c, FX_prod, FX_prod_gram, X, F, smooth_coeff, l1_coeff; max_iter, tol, warm_start)
 
@@ -81,7 +80,6 @@ function update_c!(
     l1_coeff::T = zero(T),
     max_iter::Int = 3000,
     tol::T = 1e-8,
-    warm_start::Bool = false,
 ) where {T<:AbstractFloat}
     L::T = T(0)
     lambda_l1 = Vector{T}(undef, size(c, 1))
@@ -107,9 +105,12 @@ function update_c!(
             update_double_least_squares!(double_lsq, @view(X[:, t+1]), Inf)
         end
 
-        init_guess = warm_start ? @view(c[:, t]) : zero_guess
         solution, iters =
-            solver(x0 = init_guess, f = double_lsq, g = l1_penalty, Lf = L)
+            solver(x0 = zero_guess, f = double_lsq, g = l1_penalty, Lf = L)
+        if any(isnan.(solution))
+            c[:, t] = zeros(size(solution))
+            continue
+        end
 
         @. lambda_l1 = l1_coeff / (1 + 200 * (abs(solution))) # reweight L1 to correct for bias
         solution, iters = solver(x0 = solution, f = double_lsq, g = l1_penalty, Lf = L)
@@ -156,8 +157,6 @@ function ProximalAlgorithms.value_and_gradient(
     end
 end
 
-# TODO: look into parallelizing this across trials with @distributed
-# TODO: can also parallelize across time with @threads.threads
 """
     update_F!(F, gradient_sum, temp_gradient, x_hat_next, residuals, X, c, lr_F; normalize_gradient, normalize_F)
 
@@ -179,34 +178,36 @@ function update_F!(
     temp_gradient::AbstractMatrix{T},
     x_hat_next::AbstractVector{T},
     residuals::AbstractVector{T},
-    X::AbstractMatrix{T},
-    c::AbstractMatrix{T},
+    X::Vector{<:AbstractMatrix{T}},
+    c::Vector{<:AbstractMatrix{T}},
     lr_F::T;
-    decorr_coeff::T = T(0.2),
+    decorr_coeff::T = T(0.05),
     normalize_F::Bool = true,
 ) where {T<:AbstractFloat}
     fill!(gradient_sum, zero(T))
-    num_timepoints = size(X, 2) - 1
-    # Calculate the sum of the latent reconstruction gradients over time w.r.t each F
-    for t in 1:num_timepoints
-        step_dynamics!(x_hat_next, @view(X[:, t]), @view(c[:, t]), F)
-        residuals .= @view(X[:, t+1]) .- x_hat_next
-        mul!(temp_gradient, residuals, @view(X[:, t])')
+    num_timepoints = size(X[1], 2) - 1
 
-        for i in axes(F, 1)
-            axpy!(c[i, t], temp_gradient, @view(gradient_sum[i, :, :]))
+    # Calculate the sum of the latent reconstruction gradients over time w.r.t each F
+    for trial in axes(c, 1)
+        for t in 1:num_timepoints
+            step_dynamics!(x_hat_next, @view(X[trial][:, t]), @view(c[trial][:, t]), F)
+            residuals .= @view(X[trial][:, t+1]) .- x_hat_next
+            mul!(temp_gradient, residuals, @view(X[trial][:, t])')
+
+            for i in axes(F, 1)
+                axpy!(c[trial][i, t], temp_gradient, @view(gradient_sum[i, :, :]))
+            end
         end
     end
 
-    # Normalize by # of timepoints and add the decorrelation term
+    # Take the step
+    F .+= lr_F / (num_timepoints * size(c, 1)) .* gradient_sum
+
+    # Decorrelate
+    gradient_sum .= 0
     for i in axes(F, 1)
-        grad_i = @view(gradient_sum[i, :, :])
-        grad_i ./= num_timepoints
-        if opnorm(grad_i) > 1               # cap gradient if too large
-            normalize_matrix!(grad_i)
-        end
         for j in axes(F, 1)
-            if i !== j
+            if i != j
                 # compute the trace without a new implicit allocation
                 trace = T(0)
                 for k in axes(F, 3)
@@ -214,13 +215,12 @@ function update_F!(
                 end
 
                 # add the decorrelation term to the running gradient
-                axpy!(-decorr_coeff * trace / lr_F, F[j, :, :], grad_i)
+                axpy!(trace, F[j, :, :], @view(gradient_sum[i, :, :]))
             end
         end
     end
+    @. F -= decorr_coeff * gradient_sum
 
-    # Take the gradient steps
-    @. F += lr_F * gradient_sum
     for i in axes(F, 1)
         if normalize_F
             normalize_matrix!(@view(F[i, :, :]))

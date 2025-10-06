@@ -1,4 +1,10 @@
-using DLDS
+using Distributed
+addprocs(12 - nprocs())
+
+@everywhere using LinearAlgebra
+@everywhere using DLDS
+# @everywhere LinearAlgebra.BLAS.set_num_threads(1)
+using BenchmarkTools
 
 # X, c, F = simulate_two_subsystems_no_obs(3000, [4, 4], [3, 3], 50)
 X, c, F = matlab_simulation(3000, [4, 4], [3, 3], 50)
@@ -6,91 +12,53 @@ num_motifs = 6
 num_latents = 8
 T = Float64
 
-# solve for F and c simultaneously
-F_hat, c_hat = fit_no_obs_model(
-    @view(X[1, :, :]),
+@time F_hat = fit_no_obs_model(
+    X,
     num_motifs,
-    c_l1_coeff = 0.25,
-    F_lr_init = 1.0,
-    c_smooth_coeff = 0.2,
-    max_iter = 750,
+    max_iter = 100,
+    F_decorr_coeff = 0.0,
+    F_lr_init = 10.0,
 )
 
-# solve for c given F
-FX_prod::Matrix{T} = Matrix{T}(undef, num_latents, num_motifs) # for update_c!
-FX_prod_gram::Matrix{T} = Matrix{T}(undef, num_motifs, num_motifs)
-c_hat = Matrix{Float64}(undef, size(c, 2), size(c, 3) - 1)
-update_c!(
-    c_hat,
-    FX_prod,
-    FX_prod_gram,
-    X[1, :, :],
-    F,
-    smooth_coeff = 0.2,
-    l1_coeff = 0.2,
-)
-plot_cs(c[1, :, :], c_hat)
+F_hat::Array{T,3} = copy(F);
 
-# solve for F given c
+# create_random_dynamics(num_latents, num_motifs)
+# init_matrix(InitDistribution.Normal(), (num_motifs, num_latents, num_latents), 0)
+
 gradient_sum::Array{T,3} = similar(F)                          # for update f! 
 temp_gradient::Matrix{T} = Matrix{T}(undef, num_latents, num_latents)
 x_hat_next::Vector{T} = Vector{T}(undef, num_latents)
 update_F_residuals::Vector{T} = Vector{T}(undef, num_latents)
-F_hat_orig = init_matrix(InitDistribution.Normal(), size(F), 0)
 
-start = time()
-F_hat = copy(F_hat_orig)
-F_lr = 0.5
-trial_id = 1
 for i in 1:750
-    F_old = copy(F_hat)
+    X_snippets, indices = sample_snippets(X, 50, 200)
+    c_snippets = Vector{Matrix{Float64}}(undef, size(X_snippets, 1))
+    for i in axes(X_snippets, 1)
+        trial, t_start, t_end = indices[i]
+        c_snippets[i] = c[trial][:, t_start:t_end]
+    end
+
     update_F!(
         F_hat,
         gradient_sum,
         temp_gradient,
         x_hat_next,
         update_F_residuals,
-        X[trial_id, :, :],
-        c[trial_id, :, :],
-        F_lr;
-        decorr_coeff = 0.2,
+        X,
+        c,
+        10.0,
+        decorr_coeff = 0.0,
     )
-    F_lr *= 0.99995
+    # F_hat .= DLDS.update_F_base(
+    #     F_hat,
+    #     X,
+    #     c,
+    #     10.0
+    # )
 
-    latent_recon_err = calculate_latent_recon_error!(
-        x_hat_next,
-        F_hat,
-        X[trial_id, :, :],
-        c[trial_id, :, :],
-    )
-    dF = calculate_delta_F(F_hat, F_old)
-    println("Iter $(i): Rec. Error: $(latent_recon_err),  dF: $(dF) ")
+    println("Iter $(i)")
+    # latent_recon_err =
+    #     calculate_latent_recon_error!(x_hat_next, F_hat, X_snippets, c_snippets)
+    # println("Iter $(i) - Recon Err: $(latent_recon_err)")
 end
-plot_Fs(F_hat, F)
-print(time() - start)
 
-start = time()
-F_hat_matlab = copy(F_hat_orig)
-F_lr = 0.5
-for i in 1:750
-    F_old = copy(F_hat_matlab)
-    matlab_update_F!(
-        F_hat_matlab,
-        X[trial_id, :, :],
-        c[trial_id, :, :],
-        lr_F = F_lr;
-        lambda_F = 0.2,
-    )
-    F_lr *= 0.99995
-
-    latent_recon_err = calculate_latent_recon_error!(
-        x_hat_next,
-        F_hat_matlab,
-        X[trial_id, :, :],
-        c[trial_id, :, :],
-    )
-    dF = calculate_delta_F(F_hat_matlab, F_old)
-    println("Iter $(i): Rec. Error: $(latent_recon_err),  dF: $(dF) ")
-end
-plot_Fs(F_hat_matlab, F)
-print(time() - start)
