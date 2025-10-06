@@ -11,7 +11,7 @@ function fit_full_model(
     c_l1_coeff_decay::T = T(1),
     c_smooth_coeff::T = zero(T),
     c_fista_tol::T = T(1e-8),
-    c_fista_max_iter::Int = 1000,
+    c_fista_max_iter::Int = 3000,
     D_lr::T = T(30),
     D_sign_coeff::T = zero(T),
     D_frobenius_coeff::T = zero(T),
@@ -21,7 +21,7 @@ function fit_full_model(
     F_perturb_threshold::T = T(1e-5),
     F_noise_sigma::T = T(0.1),
     F_init_max_corr::T = zero(T),
-    F_lr_decay::T = T(0.9995),
+    F_lr_decay::T = T(0.99995),
     verbose::Bool = true,
 ) where {T<:AbstractFloat}
     """
@@ -123,29 +123,32 @@ function fit_no_obs_model(
     X::Vector{<:AbstractMatrix{T}},
     num_motifs::Int;
     samples_per_snippet::Int = 200,
-    num_snippets::Int = 500,
+    num_snippets::Int = 50,
     random_seed::Int = 0,
     max_iter::Int = 5000,
     recon_threshold::T = T(1e-5),
-    c_l1_coeff::T = T(0.4),
+    c_l1_coeff::T = T(0.2),
     c_l1_coeff_decay::T = T(1),
-    c_smooth_coeff::T = T(0.45),
+    c_smooth_coeff::T = T(0.4),
     c_fista_tol::T = T(1e-8),
-    c_fista_max_iter::Int = 3000,
+    c_fista_max_iter::Int = 1000,
     F_lr_init::T = T(1),
     F_normalize_matrix::Bool = true,
     F_decorr_coeff::T = T(0.0),
     F_perturb_threshold::T = T(1e-5),
     F_noise_sigma::T = T(0.1),
     F_init_max_corr::T = zero(T),
-    F_lr_decay::T = T(0.9995),
+    F_lr_decay::T = T(0.99995),
     verbose::Bool = true,
 ) where {T<:AbstractFloat}
     num_latents::Int = size(X[1], 1)
     num_timepoints::Int = size(X[1], 2)
 
     # Initialize model parameters and state
-    F::Array{T,3} = init_matrix(
+    F::Array{T,3} =
+        # create_random_dynamics(num_latents, num_motifs, correlation_tol = 0.1)
+
+    init_matrix(
         InitDistribution.Normal(),
         (num_motifs, num_latents, num_latents),
         random_seed,

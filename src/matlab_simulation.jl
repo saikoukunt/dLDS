@@ -5,15 +5,8 @@ function matlab_simulation(
     num_trials::Int,
 )
     total_neurons = sum(num_neurons)
-    F_circuit_1 = Array{Float64,3}(undef, num_motifs[1], num_neurons[1], num_neurons[1])
-    F_circuit_2 = Array{Float64,3}(undef, num_motifs[2], num_neurons[2], num_neurons[2])
-
-    for i in axes(F_circuit_1, 1)
-        F_circuit_1[i, :, :] = sample_random_dynamics(num_neurons[1])
-    end
-    for i in axes(F_circuit_2, 1)
-        F_circuit_2[i, :, :] = sample_random_dynamics(num_neurons[2])
-    end
+    F_circuit_1 = create_random_dynamics(num_neurons[1], num_motifs[1])
+    F_circuit_2 = create_random_dynamics(num_neurons[2], num_motifs[2])
 
     top_rows = Array{Float64,3}(undef, num_motifs[1], num_neurons[1], total_neurons)
     bottom_rows = Array{Float64,3}(undef, num_motifs[2], num_neurons[2], total_neurons)
@@ -98,7 +91,7 @@ function generate_random_switched_system(
             end
             X[trial][1:num_neurons[1], t_now+1] ./=
                 norm(X[trial][1:num_neurons[1], t_now+1])
-            X[trial][num_neurons[1]+1:end, t_now+1] ./
+            X[trial][num_neurons[1]+1:end, t_now+1] ./=
             norm(X[trial][num_neurons[1]+1:end, t_now+1])
 
             # evolve state according to selected dynamics
@@ -128,11 +121,11 @@ function make_F(
     num_top = size(top_rows, 1)
     num_bot = size(bot_rows, 1)
 
-    top_opt = rand(1:num_top)
-    bot_opt = rand(1:num_bot)
+    top_opt = rand(0:num_top)
+    bot_opt = rand(0:num_bot)
 
-    top_sel = top_rows[top_opt, :, :]
-    bot_sel = bot_rows[bot_opt, :, :]
+    top_sel = top_opt != 0 ? top_rows[top_opt, :, :] : zeros(size(top_rows[1, :, :]))
+    bot_sel = bot_opt != 0 ? bot_rows[bot_opt, :, :] : zeros(size(bot_rows[1, :, :]))
 
     F = cat(top_sel, bot_sel; dims = 1)
 

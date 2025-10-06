@@ -106,15 +106,13 @@ function update_c!(
 
         solution, iters =
             solver(x0 = zero_guess, f = double_lsq, g = l1_penalty, Lf = L)
-        # if any(isnan.(solution))
-        #     solution = ones(size(solution))
-        # end
+        if any(isnan.(solution))
+            c[:, t] = zeros(size(solution))
+            continue
+        end
 
         @. lambda_l1 = l1_coeff / (1 + 200 * (abs(solution))) # reweight L1 to correct for bias
         solution, iters = solver(x0 = solution, f = double_lsq, g = l1_penalty, Lf = L)
-        # if any(isnan.(solution))
-        #     solution = ones(size(solution))
-        # end
 
         c[:, t] = solution
     end
@@ -182,7 +180,7 @@ function update_F!(
     X::Vector{<:AbstractMatrix{T}},
     c::Vector{<:AbstractMatrix{T}},
     lr_F::T;
-    decorr_coeff::T = T(0),
+    decorr_coeff::T = T(0.05),
     normalize_F::Bool = true,
 ) where {T<:AbstractFloat}
     fill!(gradient_sum, zero(T))
@@ -191,18 +189,13 @@ function update_F!(
     # Calculate the sum of the latent reconstruction gradients over time w.r.t each F
     for trial in axes(c, 1)
         for t in 1:num_timepoints
-            step_dynamics!(x_hat_next, @view(X[trial][:, t]), @view(c[trial][:, t]), F) # this works correctly
+            step_dynamics!(x_hat_next, @view(X[trial][:, t]), @view(c[trial][:, t]), F) 
             residuals .= @view(X[trial][:, t+1]) .- x_hat_next
             mul!(temp_gradient, residuals, @view(X[trial][:, t])')
 
             for i in axes(F, 1)
                 axpy!(c[trial][i, t], temp_gradient, @view(gradient_sum[i, :, :]))
             end
-        end
-
-        if any(isnan.(gradient_sum))
-            is_c_nan = any(isnan.(c[trial]))
-            println("$(trial) $(is_c_nan)")
         end
     end
 
@@ -213,66 +206,7 @@ function update_F!(
     gradient_sum .= 0
     for i in axes(F, 1)
         for j in axes(F, 1)
-            if i ≠ j
-                # # compute the trace without a new implicit allocation
-                # trace = T(0)
-                # for k in axes(F, 3)
-                #     trace += dot(@view(F[i, :, k]), @view(F[j, :, k]))
-                # end
-
-                # # add the decorrelation term to the running gradient
-                # axpy!(trace, F[j, :, :], grad_i)
-                gradient_sum[i, :, :] += tr(F[i, :, :]' * F[j, :, :]) * F[j, :, :]
-            end
-        end
-    end
-    @. F -= decorr_coeff * gradient_sum
-
-    for i in axes(F, 1)
-        if normalize_F
-            normalize_matrix!(@view(F[i, :, :]))
-        end
-    end
-end
-
-function update_F_parallel!(
-    F::AbstractArray{T,3},
-    X::Vector{<:AbstractMatrix{T}},
-    c::Vector{<:AbstractMatrix{T}},
-    lr_F::T;
-    decorr_coeff::T = T(0.2),
-    normalize_F::Bool = true,
-) where {T<:AbstractFloat}
-    num_timepoints = size(X[1], 2) - 1
-    # Calculate the sum of the latent reconstruction gradients over time w.r.t each F
-    gradient_sum = @sync @distributed (+) for trial in axes(c, 1)
-        accum = zeros(size(F))
-        temp_gradient = zeros(size(F, 2), size(F, 3))
-        x_hat_next = zeros(size(F, 2))
-        residuals = zeros(size(F, 2))
-
-        for t in 1:num_timepoints
-            step_dynamics!(x_hat_next, @view(X[trial][:, t]), @view(c[trial][:, t]), F)
-            residuals .= @view(X[trial][:, t+1]) .- x_hat_next
-            mul!(temp_gradient, residuals, @view(X[trial][:, t])')
-
-            for i in axes(F, 1)
-                axpy!(c[trial][i, t], temp_gradient, @view(accum[i, :, :]))
-            end
-        end
-        accum
-    end
-
-    # Normalize by # of timepoints and add the decorrelation term
-    for i in axes(F, 1)
-        grad_i = @view(gradient_sum[i, :, :])
-        grad_i ./= num_timepoints * size(c, 1)
-        # this is important to make it better than MATLAB code
-        if opnorm(grad_i) > 1               # cap gradient if too large
-            normalize_matrix!(grad_i)
-        end
-        for j in axes(F, 1)
-            if i !== j
+            if i != j
                 # compute the trace without a new implicit allocation
                 trace = T(0)
                 for k in axes(F, 3)
@@ -280,13 +214,12 @@ function update_F_parallel!(
                 end
 
                 # add the decorrelation term to the running gradient
-                axpy!(-decorr_coeff * trace / lr_F, F[j, :, :], grad_i)
+                axpy!(trace, F[j, :, :], @view(gradient_sum[i, :, :]))
             end
         end
     end
+    @. F -= decorr_coeff * gradient_sum
 
-    # Take the gradient steps
-    @. F += lr_F * gradient_sum
     for i in axes(F, 1)
         if normalize_F
             normalize_matrix!(@view(F[i, :, :]))

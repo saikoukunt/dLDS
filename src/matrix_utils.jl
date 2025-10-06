@@ -88,7 +88,7 @@ Applies the specified normalization to the matrix `A` in-place.
 - `norm_type::Symbol`: The type of normalization to apply. Options are:
     - `:opnorm`: Normalize by the operator norm.
     - `:max`: Normalize by the maximum absolute value.
-    - `:exp`: Normalize using the matrix exponential.
+    - `:frobeniius`: Normalize using the Frobenius norm.
 """
 function normalize_matrix!(
     A::AbstractMatrix{<:AbstractFloat},
@@ -98,6 +98,8 @@ function normalize_matrix!(
         norm_factor = opnorm(A)
     elseif norm_type == :max
         norm_factor = maximum(abs.(A))
+    elseif norm_type == :frobenius
+        norm_factor = norm(A)
     else
         error("Unknown normalization type: $norm_type. Use :opnorm, :max, or :exp.")
     end

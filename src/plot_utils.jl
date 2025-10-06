@@ -5,6 +5,7 @@ function plot_Fs(
     F::AbstractArray{T,3},
 ) where {T<:AbstractFloat}
     plots = []
+    num_motifs = max(size(F_hat, 1), size(F, 1))
     for i in axes(F, 1)
         push!(
             plots,
@@ -24,9 +25,9 @@ function plot_Fs(
     end
     plot(
         plots...,
-        layout = (2, size(F_hat, 1)),
+        layout = (2, num_motifs),
         showaxis = false,
-        size = (200 * size(F_hat, 1), 400),
+        size = (200 * num_motifs, 400),
     )
 end
 
