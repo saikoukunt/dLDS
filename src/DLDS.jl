@@ -32,7 +32,6 @@ include("./fit_infer.jl")
 include("./simulate_two_subsystems.jl")
 include("./simulate_duffing.jl")
 include("./plot_utils.jl")
-include("./matlab_model.jl")
 include("./matlab_simulation.jl")
 
 end # module DLDS
