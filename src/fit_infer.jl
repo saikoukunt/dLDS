@@ -283,7 +283,7 @@ end
 
 function calculate_latent_recon_error!(
 	x_hat_next::AbstractVector{T},
-	F::AbstractArray{T, 3},
+	F::Vector{<:AbstractMatrix{T}},
 	X::Vector{<:AbstractMatrix{T}},
 	c::Vector{<:AbstractMatrix{T}},
 ) where {T <: AbstractFloat}
@@ -302,8 +302,8 @@ function calculate_latent_recon_error!(
 end
 
 function calculate_delta_F(
-	F_new::AbstractArray{T, 3},
-	F_old::AbstractArray{T, 3},
+	F_new::AbstractVector{<:AbstractMatrix{T}},
+	F_old::AbstractVector{<:AbstractMatrix{T}},
 ) where {T <: AbstractFloat}
 	delta = 0
 	num_motifs = size(F_old, 1)
@@ -311,8 +311,8 @@ function calculate_delta_F(
 	for i in 1:num_motifs
 		delta +=
 			1 / num_motifs *
-			sum((@view(F_old[i, :, :]) .- @view(F_new[i, :, :])) .^ 2) /
-			sum(@view(F_new[i, :, :]) .^ 2)
+			sum((F_old[i] .- F_new[i]) .^ 2) /
+			sum(F_new[i] .^ 2)
 	end
 
 	return delta

@@ -1,59 +1,59 @@
 function update_c_parallel!(
-    c::Vector{<:AbstractMatrix{T}},
-    X_trial::Vector{<:AbstractMatrix{T}},
-    F::AbstractArray{T,3};
-    smooth_coeff::T = zero(T),
-    l1_coeff::T = zero(T),
-    max_iter::Int = 3000,
-    tol::T = 1e-8,
-) where {T<:AbstractFloat}
-    trial_data = [
-        (
-            X_trial[i],
-            F,
-            (
-                smooth_coeff = smooth_coeff,
-                l1_coeff = l1_coeff,
-                max_iter = max_iter,
-                tol = tol,
-            ),
-        ) for i in axes(X_trial, 1)
-    ]
+	c::Vector{<:AbstractMatrix{T}},
+	X_trial::Vector{<:AbstractMatrix{T}},
+	F::AbstractArray{T, 3};
+	smooth_coeff::T = zero(T),
+	l1_coeff::T = zero(T),
+	max_iter::Int = 3000,
+	tol::T = 1e-8,
+) where {T <: AbstractFloat}
+	trial_data = [
+		(
+			X_trial[i],
+			F,
+			(
+				smooth_coeff = smooth_coeff,
+				l1_coeff = l1_coeff,
+				max_iter = max_iter,
+				tol = tol,
+			),
+		) for i in axes(X_trial, 1)
+	]
 
-    results = pmap(worker_update_c, trial_data)
+	results = pmap(worker_update_c, trial_data)
 
-    for i in axes(c, 1)
-        c[i] = results[i]
-        if any(isnan.(c[i]))
-            println("trial $(i)")
-        end
-    end
+	for i in axes(c, 1)
+		c[i] = results[i]
+		if any(isnan.(c[i]))
+			println("trial $(i)")
+		end
+	end
 end
 
 function worker_update_c(
-    trial_data::Tuple{<:AbstractMatrix{T},<:AbstractArray{T,3},NamedTuple},
-) where {T<:AbstractFloat}
-    X, F, kwargs = trial_data
+	trial_data::Tuple{<:AbstractMatrix{T}, <:AbstractArray{T, 3}, NamedTuple},
+) where {T <: AbstractFloat}
+	X, F, kwargs = trial_data
 
-    num_latents = size(X, 1)
-    num_motifs = size(F, 1)
+	num_latents = size(X, 1)
+	num_motifs = size(F, 1)
 
-    FX_prod = Matrix{T}(undef, num_latents, num_motifs)
-    FX_prod_gram = Matrix{T}(undef, num_motifs, num_motifs)
+	FX_prod = Matrix{T}(undef, num_latents, num_motifs)
+	FX_prod_gram = Matrix{T}(undef, num_motifs, num_motifs)
 
-    return update_c!(
-        zeros(size(F, 1), size(X, 2) - 1),
-        FX_prod,
-        FX_prod_gram,
-        X,
-        F;
-        kwargs...,
-    )
+	return update_c!(
+		zeros(size(F, 1), size(X, 2) - 1),
+		FX_prod,
+		FX_prod_gram,
+		X,
+		F;
+		kwargs...,
+	)
 end
 
 # NOTE: this function is parallelizable across time if we do Jacobi updates instead of Gauss-Siedel
 """
-    update_c!(c, FX_prod, FX_prod_gram, X, F, smooth_coeff, l1_coeff; max_iter, tol, warm_start)
+	update_c!(c, FX_prod, FX_prod_gram, X, F, smooth_coeff, l1_coeff; max_iter, tol, warm_start)
 
 Calculates an update estimate of dynamics motif coefficients.
 
@@ -71,94 +71,94 @@ Calculates an update estimate of dynamics motif coefficients.
 - `warm_start`: Whether to use previous estimates of c_t as initial guess for FISTA solver.
 """
 function update_c!(
-    c::AbstractMatrix{T},
-    FX_prod::AbstractMatrix{T},
-    FX_prod_gram::AbstractMatrix{T},
-    X::AbstractMatrix{T},
-    F::AbstractArray{T,3};
-    smooth_coeff::T = zero(T),
-    l1_coeff::T = zero(T),
-    max_iter::Int = 3000,
-    tol::T = 1e-8,
-) where {T<:AbstractFloat}
-    L::T = T(0)
-    lambda_l1 = Vector{T}(undef, size(c, 1))
-    lambda_l1 .= l1_coeff
-    l1_penalty = NormL1(lambda_l1)
-    zero_guess = zeros(T, size(c, 1))
-    solver = ProximalAlgorithms.FastForwardBackward(maxit = max_iter, tol = tol)
-    double_lsq =
-        DoubleLeastSquares(FX_prod, @view(X[:, 1]), @view(c[:, 1]), smooth_coeff)
+	c::AbstractMatrix{T},
+	FX_prod::AbstractMatrix{T},
+	FX_prod_gram::AbstractMatrix{T},
+	X::AbstractMatrix{T},
+	F::AbstractArray{T, 3};
+	smooth_coeff::T = zero(T),
+	l1_coeff::T = zero(T),
+	max_iter::Int = 3000,
+	tol::T = 1e-8,
+) where {T <: AbstractFloat}
+	L::T = T(0)
+	lambda_l1 = Vector{T}(undef, size(c, 1))
+	lambda_l1 .= l1_coeff
+	l1_penalty = NormL1(lambda_l1)
+	zero_guess = zeros(T, size(c, 1))
+	solver = ProximalAlgorithms.FastForwardBackward(maxit = max_iter, tol = tol)
+	double_lsq =
+		DoubleLeastSquares(FX_prod, @view(X[:, 1]), @view(c[:, 1]), smooth_coeff)
 
-    for t in axes(c, 2)
-        for i in axes(F, 1)
-            mul!(@view(FX_prod[:, i]), @view(F[i, :, :]), @view(X[:, t]))
-        end
+	for t in axes(c, 2)
+		for i in axes(F, 1)
+			mul!(@view(FX_prod[:, i]), @view(F[i, :, :]), @view(X[:, t]))
+		end
 
-        # TODO: profile precomputing L vs letting the solver do a backtracking line search
-        LinearAlgebra.BLAS.syrk!('U', 'T', true, FX_prod, false, FX_prod_gram)
-        L = eigmax(Symmetric(FX_prod_gram, :U))
-        if smooth_coeff > 0 && t > 1
-            update_double_least_squares!(double_lsq, @view(X[:, t+1]), @view(c[:, t-1]))
-            L += smooth_coeff
-        else
-            update_double_least_squares!(double_lsq, @view(X[:, t+1]), Inf)
-        end
+		# TODO: profile precomputing L vs letting the solver do a backtracking line search
+		LinearAlgebra.BLAS.syrk!('U', 'T', true, FX_prod, false, FX_prod_gram)
+		L = eigmax(Symmetric(FX_prod_gram, :U))
+		if smooth_coeff > 0 && t > 1
+			update_double_least_squares!(double_lsq, @view(X[:, t+1]), @view(c[:, t-1]))
+			L += smooth_coeff
+		else
+			update_double_least_squares!(double_lsq, @view(X[:, t+1]), Inf)
+		end
 
-        solution, iters =
-            solver(x0 = zero_guess, f = double_lsq, g = l1_penalty, Lf = L)
-        if any(isnan.(solution))
-            c[:, t] = zeros(size(solution))
-            continue
-        end
+		solution, iters =
+			solver(x0 = zero_guess, f = double_lsq, g = l1_penalty, Lf = L)
+		if any(isnan.(solution))
+			c[:, t] = zeros(size(solution))
+			continue
+		end
 
-        @. lambda_l1 = l1_coeff / (1 + 200 * (abs(solution))) # reweight L1 to correct for bias
-        solution, iters = solver(x0 = solution, f = double_lsq, g = l1_penalty, Lf = L)
+		@. lambda_l1 = l1_coeff / (1 + 200 * (abs(solution))) # reweight L1 to correct for bias
+		solution, iters = solver(x0 = solution, f = double_lsq, g = l1_penalty, Lf = L)
 
-        c[:, t] = solution
-    end
+		c[:, t] = solution
+	end
 
-    return c
+	return c
 end
 
-mutable struct DoubleLeastSquares{T<:AbstractFloat}
-    FX_prod::AbstractMatrix{T}
-    X_tplus1::AbstractVector{T}
-    c_tminus1::Union{AbstractVector{T},T}
-    lambda::T
+mutable struct DoubleLeastSquares{T <: AbstractFloat}
+	FX_prod::AbstractMatrix{T}
+	X_tplus1::AbstractVector{T}
+	c_tminus1::Union{AbstractVector{T}, T}
+	lambda::T
 end
 
 function update_double_least_squares!(
-    double_lsq::DoubleLeastSquares,
-    X_tplus1::AbstractVector{T},
-    c_tminus1::Union{AbstractVector{T},T},
-) where {T<:AbstractFloat}
-    double_lsq.X_tplus1 = X_tplus1
-    double_lsq.c_tminus1 = c_tminus1
+	double_lsq::DoubleLeastSquares,
+	X_tplus1::AbstractVector{T},
+	c_tminus1::Union{AbstractVector{T}, T},
+) where {T <: AbstractFloat}
+	double_lsq.X_tplus1 = X_tplus1
+	double_lsq.c_tminus1 = c_tminus1
 end
 
 function ProximalAlgorithms.value_and_gradient(
-    double_lsq::DoubleLeastSquares{T},
-    c::AbstractVector{T},
-) where {T<:AbstractFloat}
-    recon_residual = double_lsq.FX_prod * c
-    recon_residual .-= double_lsq.X_tplus1
-    recon_loss = 0.5 * dot(recon_residual, recon_residual)
-    recon_gradient = double_lsq.FX_prod' * recon_residual
+	double_lsq::DoubleLeastSquares{T},
+	c::AbstractVector{T},
+) where {T <: AbstractFloat}
+	recon_residual = double_lsq.FX_prod * c
+	recon_residual .-= double_lsq.X_tplus1
+	recon_loss = 0.5 * dot(recon_residual, recon_residual)
+	recon_gradient = double_lsq.FX_prod' * recon_residual
 
-    if double_lsq.c_tminus1 isa AbstractVector{T}
-        smooth_residual = c - double_lsq.c_tminus1
-        smooth_loss = double_lsq.lambda * 0.5 * dot(smooth_residual, smooth_residual)
-        axpy!(double_lsq.lambda, smooth_residual, recon_gradient)  # single step to calculate and accumulate gradient
+	if double_lsq.c_tminus1 isa AbstractVector{T}
+		smooth_residual = c - double_lsq.c_tminus1
+		smooth_loss = double_lsq.lambda * 0.5 * dot(smooth_residual, smooth_residual)
+		axpy!(double_lsq.lambda, smooth_residual, recon_gradient)  # single step to calculate and accumulate gradient
 
-        return recon_loss + smooth_loss, recon_gradient
-    else
-        return recon_loss, recon_gradient
-    end
+		return recon_loss + smooth_loss, recon_gradient
+	else
+		return recon_loss, recon_gradient
+	end
 end
 
 """
-    update_F!(F, gradient_sum, temp_gradient, x_hat_next, residuals, X, c, lr_F; normalize_gradient, normalize_F)
+	update_F!(F, gradient_sum, temp_gradient, x_hat_next, residuals, X, c, lr_F; normalize_gradient, normalize_F)
 
 Updates elements of F via gradient descent.
 
@@ -173,64 +173,64 @@ Updates elements of F via gradient descent.
 - `lr_F`: Learning rate.
 """
 function update_F!(
-    F::AbstractArray{T,3},
-    gradient_sum::AbstractArray{T,3},
-    temp_gradient::AbstractMatrix{T},
-    x_hat_next::AbstractVector{T},
-    residuals::AbstractVector{T},
-    X::Vector{<:AbstractMatrix{T}},
-    c::Vector{<:AbstractMatrix{T}},
-    lr_F::T;
-    decorr_coeff::T = T(0.05),
-    normalize_F::Bool = true,
-) where {T<:AbstractFloat}
-    fill!(gradient_sum, zero(T))
-    num_timepoints = size(X[1], 2) - 1
+	F::AbstractVector{<:AbstractMatrix{T}},
+	gradient_sum::AbstractVector{<:AbstractMatrix{T}},
+	temp_gradient::AbstractMatrix{T},
+	x_hat_next::AbstractVector{T},
+	residuals::AbstractVector{T},
+	X::Vector{<:AbstractMatrix{T}},
+	c::Vector{<:AbstractMatrix{T}},
+	lr_F::T;
+	decorr_coeff::T = T(0.1),
+	normalize_F::Bool = true,
+) where {T <: AbstractFloat}
+	for i in axes(gradient_sum, 1)
+		fill!(gradient_sum[i], zero(T))
+	end
+	num_timepoints = size(X[1], 2) - 1
 
-    # Calculate the sum of the latent reconstruction gradients over time w.r.t each F
-    for trial in axes(c, 1)
-        for t in 1:num_timepoints
-            step_dynamics!(x_hat_next, @view(X[trial][:, t]), @view(c[trial][:, t]), F)
-            residuals .= @view(X[trial][:, t+1]) .- x_hat_next
-            mul!(temp_gradient, residuals, @view(X[trial][:, t])')
+	# Calculate the sum of the latent reconstruction gradients over time w.r.t each F
+	for trial in axes(c, 1)
+		for t in 1:num_timepoints
+			step_dynamics!(x_hat_next, @view(X[trial][:, t]), @view(c[trial][:, t]), F)
+			residuals .= @view(X[trial][:, t+1]) .- x_hat_next
+			mul!(temp_gradient, residuals, @view(X[trial][:, t])')
 
-            for i in axes(F, 1)
-                axpy!(c[trial][i, t], temp_gradient, @view(gradient_sum[i, :, :]))
-            end
-        end
-    end
+			for i in axes(F, 1)
+				axpy!(c[trial][i, t], temp_gradient, gradient_sum[i])
+			end
+		end
+	end
 
-    # Take the step
-    F .+= lr_F / (num_timepoints * size(c, 1)) .* gradient_sum
+	# Take the step
+	for i in axes(F, 1)
+		F[i] .+= lr_F / (num_timepoints * size(c, 1)) .* gradient_sum[i]
+	end
 
-    # Decorrelate
-    gradient_sum .= 0
-    for i in axes(F, 1)
-        for j in axes(F, 1)
-            if i != j
-                # compute the trace without a new implicit allocation
-                trace = T(0)
-                for k in axes(F, 3)
-                    trace += dot(@view(F[i, :, k]), @view(F[j, :, k]))
-                end
+	# Decorrelate
+	for i in axes(gradient_sum, 1)
+		fill!(gradient_sum[i], zero(T))
+	end
+	for i in axes(F, 1)
+		for j in axes(F, 1)
+			if i != j
+				# add the decorrelation term to the running gradient
+				axpy!(dot(F[i], F[j]), F[j], gradient_sum[i])
+			end
+		end
+	end
 
-                # add the decorrelation term to the running gradient
-                axpy!(trace, F[j, :, :], @view(gradient_sum[i, :, :]))
-            end
-        end
-    end
-    @. F -= decorr_coeff * gradient_sum
-
-    for i in axes(F, 1)
-        if normalize_F
-            normalize_matrix!(@view(F[i, :, :]))
-        end
-    end
+	for i in axes(F, 1)
+		@. F[i] -= decorr_coeff * gradient_sum[i]
+		if normalize_F
+			normalize_matrix!(F[i])
+		end
+	end
 end
 
 # TODO: Fuse this with update_c via stacking
 """
-    update_X(X, D, Y, lambda_l1=0.0)
+	update_X(X, D, Y, lambda_l1=0.0)
 
 Infers the latent state vector with Lasso regression given the loading matrix D and observations y.
 
@@ -243,30 +243,30 @@ Infers the latent state vector with Lasso regression given the loading matrix D 
 - Inferred state vector.
 """
 function update_X!(
-    X::AbstractMatrix{T},
-    D::AbstractMatrix{T},
-    Y::AbstractMatrix{T};
-    lambda_l1::T = zero(T),
-) where {T<:AbstractFloat}
-    if iszero(lambda_l1)
-        X .= pinv(D) * Y
-    else
-        fit = glmnet(
-            D,
-            Y,
-            MvNormal(),
-            alpha = 1.0,
-            lambda = [lambda_l1],
-            intercept = false,
-        )
-        X .= fit.betas[:, :, 1]
-    end
+	X::AbstractMatrix{T},
+	D::AbstractMatrix{T},
+	Y::AbstractMatrix{T};
+	lambda_l1::T = zero(T),
+) where {T <: AbstractFloat}
+	if iszero(lambda_l1)
+		X .= pinv(D) * Y
+	else
+		fit = glmnet(
+			D,
+			Y,
+			MvNormal(),
+			alpha = 1.0,
+			lambda = [lambda_l1],
+			intercept = false,
+		)
+		X .= fit.betas[:, :, 1]
+	end
 
-    return X
+	return X
 end
 
 """
-    update_D(D, lr_D, x, y; sign_coeff=0.0, frobenius_coeff=0.0)
+	update_D(D, lr_D, x, y; sign_coeff=0.0, frobenius_coeff=0.0)
 
 Updates the dictionary matrix `D` using the provided learning rate and regularization parameters.
 
@@ -282,34 +282,34 @@ Updates the dictionary matrix `D` using the provided learning rate and regulariz
 - Updated dictionary matrix `D`.
 """
 function update_D!(
-    D::AbstractMatrix{T},
-    lr_D::T,
-    X::AbstractMatrix{T},
-    Y::AbstractMatrix{T};
-    sign_coeff::T = zero(T),
-    frobenius_coeff::T = zero(T),
-) where {T<:AbstractFloat}
-    if sign_coeff != 0 || frobenius_coeff != 0
-        tmp = similar(Y)
-        reconstruction_grad = similar(D)
-        mul!(tmp, D, X)
-        tmp .= Y .- tmp
-        mul!(reconstruction_grad, tmp, X', true, false)     # (Y - DX)X'
+	D::AbstractMatrix{T},
+	lr_D::T,
+	X::AbstractMatrix{T},
+	Y::AbstractMatrix{T};
+	sign_coeff::T = zero(T),
+	frobenius_coeff::T = zero(T),
+) where {T <: AbstractFloat}
+	if sign_coeff != 0 || frobenius_coeff != 0
+		tmp = similar(Y)
+		reconstruction_grad = similar(D)
+		mul!(tmp, D, X)
+		tmp .= Y .- tmp
+		mul!(reconstruction_grad, tmp, X', true, false)     # (Y - DX)X'
 
-        sign_penalty = mapreduce(sign, +, D)
-        @. D -=
-            lr_D * (
-                (-2 * reconstruction_grad) +
-                (sign_coeff * sign_penalty) +
-                (2 * frobenius_coeff * D)
-            )
-    else
-        D .= Y * pinv(X)
-    end
+		sign_penalty = mapreduce(sign, +, D)
+		@. D -=
+			lr_D * (
+				(-2 * reconstruction_grad) +
+				(sign_coeff * sign_penalty) +
+				(2 * frobenius_coeff * D)
+			)
+	else
+		D .= Y * pinv(X)
+	end
 end
 
 """
-    step_dynamics(x_hat_next, x_t, c_t, F)
+	step_dynamics(x_hat_next, x_t, c_t, F)
 
 Estimates the next state of the system using the current latent state `x_t` and 
 coefficients `c_t`.
@@ -324,14 +324,14 @@ coefficients `c_t`.
 - Updated state of the system at time `t+1`.
 """
 function step_dynamics!(
-    x_hat_next::AbstractVector{T},
-    x_t::AbstractVector{T},
-    c_t::AbstractVector{T},
-    F::AbstractArray{T,3},
-) where {T<:AbstractFloat}
-    fill!(x_hat_next, zero(T))
+	x_hat_next::AbstractVector{T},
+	x_t::AbstractVector{T},
+	c_t::AbstractVector{T},
+	F::AbstractVector{<:AbstractMatrix{T}},
+) where {T <: AbstractFloat}
+	fill!(x_hat_next, zero(T))
 
-    for i in axes(F, 1)
-        mul!(x_hat_next, @view(F[i, :, :]), x_t, c_t[i], true)
-    end
+	for i in axes(F, 1)
+		mul!(x_hat_next, F[i], x_t, c_t[i], true)
+	end
 end
