@@ -6,11 +6,8 @@ using Random
 using Statistics
 using ProximalOperators
 using ProximalAlgorithms
-using SparseArrays
-using Printf
 using GLMNet
 using Base.Threads
-using Distributed
 using Distributed
 
 export fit_full_model, fit_no_obs_model, infer_full_state, infer_no_obs_state
@@ -21,7 +18,6 @@ export InitDistribution, init_matrix
 
 export calculate_latent_recon_error!, step_dynamics!, calculate_delta_F
 export plot_cs, plot_Fs
-export matlab_simulation
 export sample_snippets, worker_update_c, update_c_parallel!
 
 include("./matrix_utils.jl")
@@ -32,6 +28,5 @@ include("./fit_infer.jl")
 include("./simulate_two_subsystems.jl")
 include("./simulate_duffing.jl")
 include("./plot_utils.jl")
-include("./matlab_simulation.jl")
 
 end # module DLDS
